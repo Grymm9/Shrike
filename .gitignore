@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+config/
+*.log
+sessions/*.tmp-*
+.DS_Store
+Thumbs.db
+shots/
+.shrike-workspace/
