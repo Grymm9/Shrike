@@ -1,51 +1,53 @@
-import type { Rules } from "./rules.js";
-import type { SessionShape } from "./ingest.js";
-
-export interface Settings {
-  schemaVersion: number;
-  rules: Rules;
-  sync: { autoPush: boolean };
-}
-
-export interface SessionMeta {
-  id: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-  endpointCount: number;
-  keptCount: number;
-  filteredCount: number;
-  maxScore: number;
-  rulesHash: string;
-}
+import type {
+  BountyCache,
+  LegacyEngagement,
+  SavedViews,
+  Settings,
+  Shortlist,
+  ShortlistStatus,
+} from "../../src/lib/types";
 
 export class Store {
   constructor(workspace: string);
   workspace: string;
   sessionsDir: string;
   configDir: string;
+  archiveDir: string;
   settingsPath: string;
   gitStatePath: string;
+  bountiesPath: string;
+  viewsPath: string;
+  shortlistPath: string;
+
   init(): Promise<void>;
-  sessionPath(id: string): string;
+  legacyPath(id: string): string;
+
   readSettings(): Promise<Settings>;
   writeSettings(settings: Settings): Promise<Settings>;
-  setRules(rules: Rules): Promise<Settings>;
   setAutoPush(enabled: boolean): Promise<Settings>;
+  setPrefs(prefs: Partial<Settings["prefs"]>): Promise<Settings>;
+
   readGitState(): Promise<{ lastSyncAt: string | null }>;
   writeGitState(state: { lastSyncAt: string | null }): Promise<void>;
-  listSessions(): Promise<SessionMeta[]>;
-  readSession(id: string): Promise<SessionShape>;
-  writeSession(session: SessionShape): Promise<SessionShape>;
-  createSession(name: string): Promise<SessionShape>;
-  renameSession(id: string, name: string): Promise<SessionShape>;
-  deleteSession(id: string): Promise<void>;
-  ingest(
+
+  readBountyCache(): Promise<BountyCache>;
+  writeBountyCache(cache: BountyCache): Promise<BountyCache>;
+
+  readViews(): Promise<SavedViews>;
+  writeViews(views: SavedViews): Promise<SavedViews>;
+
+  readShortlist(): Promise<Shortlist>;
+  writeShortlist(shortlist: Shortlist): Promise<Shortlist>;
+  setShortlist(
     id: string,
-    raw: string,
-    mode: "replace" | "append",
-    sourceName: string | null,
-  ): Promise<SessionShape>;
-  rescore(id: string): Promise<SessionShape>;
-  rescoreAll(): Promise<SessionShape[]>;
+    patch: { status?: ShortlistStatus; note?: string },
+  ): Promise<Shortlist>;
+  removeShortlist(id: string): Promise<Shortlist>;
+  backupSyncedData(): Promise<string>;
+
+  listLegacy(): Promise<LegacyEngagement[]>;
+  archiveLegacy(id: string): Promise<boolean>;
+  deleteLegacy(id: string): Promise<boolean>;
+  archiveAllLegacy(): Promise<LegacyEngagement[]>;
+  deleteAllLegacy(): Promise<LegacyEngagement[]>;
 }

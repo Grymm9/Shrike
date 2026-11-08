@@ -58,28 +58,33 @@ const GITIGNORE_LINES = [
   "node_modules/",
   "dist/",
   "release/",
-  "config/",
+  "sessions/",
+  "archive/",
+  "config/settings.json",
+  "config/git-state.json",
+  "config/bounties.json",
+  "config/backups/",
   "*.log",
-  "sessions/*.tmp-*",
   ".DS_Store",
   "Thumbs.db",
 ];
+const TRACKED_FILES = [".gitignore", "config/views.json", "config/shortlist.json"];
 
 function classify(stderr) {
   const text = stderr.toLowerCase();
   if (/rejected|non-fast-forward|fetch first|behind its remote/.test(text)) {
-    return { phase: "behind", message: "Remote has newer commits — use Sync / Fetch Latest." };
+    return { phase: "behind", message: "The remote has commits you don't have yet. Use Fetch latest in Settings." };
   }
   if (/couldn't find remote ref|no such ref|remote branch .* not found/.test(text)) {
-    return { phase: "error", message: "Remote has no main branch yet — push once to create it." };
+    return { phase: "error", message: "The remote has no main branch yet. Push changes once to create it." };
   }
   if (/authentication failed|could not read username|permission denied|403|terminal prompts disabled/.test(text)) {
-    return { phase: "error", message: "Git credentials unavailable. Configure a GitHub token or SSH key for this machine." };
+    return { phase: "error", message: "Git couldn't sign in to the remote. Add a GitHub token or SSH key on this machine." };
   }
   if (/could not resolve host|unable to access|connection|network|timed out|does not appear to be a git repository/.test(text)) {
-    return { phase: "offline", message: "Offline or remote unreachable — work is saved locally." };
+    return { phase: "offline", message: "Can't reach the remote. Your work is saved locally." };
   }
-  return { phase: "error", message: stderr.split("\n").filter(Boolean).slice(-1)[0] || "Git command failed." };
+  return { phase: "error", message: stderr.split("\n").filter(Boolean).slice(-1)[0] || "Git failed. Check the remote URL and try again." };
 }
 
 export class GitSync {
@@ -93,7 +98,7 @@ export class GitSync {
     this.state = {
       phase: "idle",
       action: null,
-      message: "Ready",
+      message: "Local repository ready",
       lastSyncAt,
       remote: null,
       branch: "main",
@@ -134,11 +139,18 @@ export class GitSync {
     } catch {
       existing = "";
     }
-    const lines = existing.split(/\r?\n/);
-    const present = new Set(lines.map((l) => l.trim()));
-    const missing = GITIGNORE_LINES.filter((l) => !present.has(l));
+    // v1 ignored all of config/; that would hide the files we now sync.
+    const stale = new Set(["config/", "sessions/*.tmp-*"]);
+    const lines = existing
+      .split(/\r?\n/)
+      .filter((line) => !stale.has(line.trim()));
+    const present = new Set(lines.map((line) => line.trim()));
+    const missing = GITIGNORE_LINES.filter((line) => !present.has(line));
     if (missing.length) {
-      const next = (existing.replace(/\s*$/, "") + "\n" + missing.join("\n") + "\n").replace(/^\n+/, "");
+      lines.push(...missing);
+    }
+    const next = lines.join("\n").replace(/^\n+/, "").replace(/\s*$/, "") + "\n";
+    if (next !== existing) {
       await fs.writeFile(file, next, "utf8");
     }
   }
@@ -167,10 +179,13 @@ export class GitSync {
     if (!hasRepo) {
       const res = await this.git(["init", "-b", "main"]);
       if (res.code !== 0) {
-        this.emit({ phase: "error", message: "git init failed: " + res.stderr });
+        this.emit({
+          phase: "error",
+          message: "Couldn't create the local Git repository. " + res.stderr,
+        });
         return this.getState();
       }
-      this.emit({ message: "Initialised local git repository" });
+      this.emit({ message: "Local Git repository created" });
     }
 
     await this.ensureGitignore();
@@ -178,7 +193,13 @@ export class GitSync {
     const branch = await this.detectBranch();
     const remote = await this.detectRemote();
 
-    this.emit({ branch, remote, hasRepo: true, phase: "idle", message: "Ready" });
+    this.emit({
+      branch,
+      remote,
+      hasRepo: true,
+      phase: "idle",
+      message: remote ? `Connected to origin/${branch}` : "Saved locally · no remote configured",
+    });
     return this.getState();
   }
 
@@ -207,11 +228,11 @@ export class GitSync {
   schedulePush(message) {
     if (!this.autoPush) return;
     if (this.timer) clearTimeout(this.timer);
-    this.pendingMessage = message || "shrike: session update";
-    this.emit({ phase: "idle", action: null, message: "Changes queued · auto-push in 1s" });
+    this.pendingMessage = message || "shrike: saved bounties update";
+    this.emit({ phase: "idle", action: null, message: "Changes queued · pushing in a moment" });
     this.timer = setTimeout(() => {
       this.timer = null;
-      const msg = this.pendingMessage || "shrike: session update";
+      const msg = this.pendingMessage || "shrike: saved bounties update";
       this.pendingMessage = null;
       this.pushNow(msg).catch(() => {});
     }, 1200);
@@ -223,18 +244,30 @@ export class GitSync {
     if (!this.timer) return this.getState();
     clearTimeout(this.timer);
     this.timer = null;
-    const msg = this.pendingMessage || "shrike: session update";
+    const msg = this.pendingMessage || "shrike: saved bounties update";
     this.pendingMessage = null;
     return this.pushNow(msg);
   }
 
   pushNow(message = "shrike: manual push") {
     return this.enqueue(async () => {
-      this.emit({ phase: "working", action: "push", message: "Committing session changes…" });
+      this.emit({ phase: "working", action: "push", message: "Saving changes locally…" });
       try {
-        const add = await this.git(["add", "--", "sessions", ".gitignore"]);
-        if (add.code !== 0) {
-          throw new Error(add.stderr || "git add failed");
+        const existing = [];
+        for (const file of TRACKED_FILES) {
+          try {
+            await fs.access(path.join(this.repo, file));
+            existing.push(file);
+          } catch {
+            // A missing file simply has nothing to stage.
+          }
+        }
+
+        if (existing.length) {
+          const add = await this.git(["add", "--", ...existing]);
+          if (add.code !== 0) {
+            throw new Error(add.stderr || "git add failed");
+          }
         }
 
         const diff = await this.git(["diff", "--cached", "--quiet"]);
@@ -265,19 +298,23 @@ export class GitSync {
             phase: "idle",
             action: null,
             message: committed
-              ? "Session committed locally · no remote configured"
-              : "No session changes to commit",
+              ? "Saved locally · no remote configured"
+              : "Nothing to save · no remote configured",
           });
           return this.getState();
         }
 
         const ahead = await this.aheadCount();
         if (!committed && ahead === 0) {
-          this.emit({ phase: "idle", action: null, message: "Up to date with origin" });
+          this.emit({ phase: "idle", action: null, message: "Everything is up to date" });
           return this.getState();
         }
 
-        this.emit({ phase: "working", action: "push", message: `Pushing to origin/${this.state.branch}…` });
+        this.emit({
+          phase: "working",
+          action: "push",
+          message: `Pushing to origin/${this.state.branch}…`,
+        });
         const push = await this.git(["push", "-u", "origin", this.state.branch], { timeout: 45000 });
         if (push.code !== 0) {
           const classified = classify(push.stderr);
@@ -309,7 +346,7 @@ export class GitSync {
   pullNow() {
     return this.enqueue(async () => {
       if (!this.state.remote) {
-        throw new Error("No remote configured. Add a GitHub remote in Settings → Synchronisation.");
+        throw new Error("No remote configured. Add your Git remote in Settings first.");
       }
       this.emit({ phase: "working", action: "pull", message: `Pulling origin/${this.state.branch}…` });
       try {
@@ -327,7 +364,9 @@ export class GitSync {
         this.emit({
           phase: "idle",
           action: null,
-          message: upToDate ? "Already up to date" : `Pulled origin/${this.state.branch}`,
+          message: upToDate
+            ? "Already up to date"
+            : `Fetched the latest saved bounties from origin/${this.state.branch}`,
           lastSyncAt,
         });
         return this.getState();
@@ -345,7 +384,7 @@ export class GitSync {
     return this.enqueue(async () => {
       const value = String(url ?? "").trim();
       if (!/^(https?:\/\/|git@|ssh:\/\/)/.test(value)) {
-        throw new Error("Remote must be an https://, ssh:// or git@ URL.");
+        throw new Error("Enter an https://, ssh:// or git@ clone URL for the remote.");
       }
       const existing = await this.git(["remote", "get-url", "origin"]);
       const res =
@@ -353,9 +392,9 @@ export class GitSync {
           ? await this.git(["remote", "set-url", "origin", value])
           : await this.git(["remote", "add", "origin", value]);
       if (res.code !== 0) {
-        throw new Error(res.stderr || "Could not set remote");
+        throw new Error(res.stderr || "Couldn't save that remote URL.");
       }
-      this.emit({ remote: value, phase: "idle", message: "Remote saved" });
+      this.emit({ remote: value, phase: "idle", message: "Remote saved — pushes will go here" });
       return this.getState();
     });
   }

@@ -12,25 +12,38 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld("shrike", {
   bootstrap: (activeId) => invoke("app:bootstrap", activeId),
-  openSessionsDir: () => invoke("app:open-sessions"),
   openWorkspace: () => invoke("app:open-workspace"),
+  openExternal: (url) => invoke("app:open-external", url),
 
-  saveRules: (rules, activeSessionId) => invoke("settings:save-rules", rules, activeSessionId),
-  resetRules: (activeSessionId) => invoke("settings:reset-rules", activeSessionId),
+  listBounties: () => invoke("bounties:list"),
+  refreshBounties: () => invoke("bounties:refresh"),
+  exportCsv: (payload) => invoke("export:csv", payload),
+
   setAutoPush: (enabled) => invoke("settings:set-autopush", enabled),
+  setPrefs: (prefs) => invoke("settings:set-prefs", prefs),
+
+  checkForUpdates: () => invoke("update:check"),
+  downloadUpdate: () => invoke("update:download"),
+  installUpdate: () => invoke("update:install"),
+  updateState: () => invoke("update:state"),
+
+  saveViews: (views) => invoke("views:save", views),
+  setShortlist: (payload) => invoke("shortlist:set", payload),
+  removeShortlist: (id) => invoke("shortlist:remove", id),
 
   pushNow: () => invoke("sync:push"),
   pullNow: () => invoke("sync:pull"),
   setRemote: (url) => invoke("sync:set-remote", url),
 
-  listSessions: () => invoke("sessions:list"),
-  createSession: (name) => invoke("sessions:create", name),
-  getSession: (id) => invoke("sessions:get", id),
-  renameSession: (id, name) => invoke("sessions:rename", id, name),
-  deleteSession: (id) => invoke("sessions:delete", id),
-  ingest: (payload) => invoke("sessions:ingest", payload),
-  rescore: (id) => invoke("sessions:rescore", id),
+  listLegacy: () => invoke("legacy:list"),
+  archiveLegacy: (id) => invoke("legacy:archive", id),
+  deleteLegacy: (id) => invoke("legacy:delete", id),
+  archiveAllLegacy: () => invoke("legacy:archive-all"),
+  deleteAllLegacy: () => invoke("legacy:delete-all"),
 
   onSyncStatus: (callback) => subscribe("sync:status", callback),
-  onSessionsChanged: (callback) => subscribe("sessions:changed", callback),
+  onBountiesChanged: (callback) => subscribe("bounties:changed", callback),
+  onBountyProgress: (callback) => subscribe("bounties:progress", callback),
+  onDataChanged: (callback) => subscribe("data:changed", callback),
+  onUpdateStatus: (callback) => subscribe("update:status", callback),
 });

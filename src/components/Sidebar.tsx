@@ -1,37 +1,40 @@
 import type { View, GitState } from "../lib/types";
 import { formatRelative, remoteHost } from "../lib/format";
 import {
-  IconDashboard,
   IconFolder,
   IconMark,
-  IconRules,
-  IconSessions,
+  IconPrograms,
+  IconSettings,
+  IconStar,
 } from "./Icons";
 
 interface SidebarProps {
   view: View;
   onChange: (view: View) => void;
-  sessionCount: number;
-  rankCount: number;
+  bountyCount: number;
+  savedCount: number;
   git: GitState | null;
+  version: string;
   workspace: string;
   onOpenWorkspace: () => void;
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  idle: "READY",
-  working: "SYNCING",
-  error: "SYNC ERROR",
-  offline: "OFFLINE",
-  behind: "BEHIND REMOTE",
-};
+function phaseLabel(git: GitState | null): string {
+  const phase = git?.phase ?? "idle";
+  if (phase === "working") return "SYNCING";
+  if (phase === "error") return "SYNC ERROR";
+  if (phase === "offline") return "OFFLINE";
+  if (phase === "behind") return "PULL NEEDED";
+  return git?.remote ? "UP TO DATE" : "LOCAL ONLY";
+}
 
 export function Sidebar({
   view,
   onChange,
-  sessionCount,
-  rankCount,
+  bountyCount,
+  savedCount,
   git,
+  version,
   workspace,
   onOpenWorkspace,
 }: SidebarProps) {
@@ -45,36 +48,36 @@ export function Sidebar({
         </span>
         <span className="brand-text">
           <span className="brand-name">SHRIKE</span>
-          <span className="brand-sub">Object-level triage</span>
+          <span className="brand-sub">Bounty discovery</span>
         </span>
       </div>
 
       <nav className="nav" aria-label="Primary">
         <button
           type="button"
-          className={"nav-item" + (view === "dashboard" ? " active" : "")}
-          onClick={() => onChange("dashboard")}
+          className={"nav-item" + (view === "bounties" ? " active" : "")}
+          onClick={() => onChange("bounties")}
         >
-          <IconDashboard />
-          <span className="nav-label">Dashboard</span>
-          <span className="nav-count">{rankCount}</span>
+          <IconPrograms />
+          <span className="nav-label">Bounties</span>
+          <span className="nav-count">{bountyCount}</span>
         </button>
         <button
           type="button"
-          className={"nav-item" + (view === "sessions" ? " active" : "")}
-          onClick={() => onChange("sessions")}
+          className={"nav-item" + (view === "saved" ? " active" : "")}
+          onClick={() => onChange("saved")}
         >
-          <IconSessions />
-          <span className="nav-label">Sessions</span>
-          <span className="nav-count">{sessionCount}</span>
+          <IconStar />
+          <span className="nav-label">Saved</span>
+          <span className="nav-count">{savedCount}</span>
         </button>
         <button
           type="button"
-          className={"nav-item" + (view === "rules" ? " active" : "")}
-          onClick={() => onChange("rules")}
+          className={"nav-item" + (view === "settings" ? " active" : "")}
+          onClick={() => onChange("settings")}
         >
-          <IconRules />
-          <span className="nav-label">Rules &amp; sync</span>
+          <IconSettings />
+          <span className="nav-label">Settings</span>
         </button>
       </nav>
 
@@ -83,7 +86,7 @@ export function Sidebar({
       <section className="sync-card" aria-label="Sync status">
         <header className="sync-card-head">
           <span className={`status-dot phase-${phase}`} />
-          <span className="micro-label">{PHASE_LABEL[phase] ?? phase.toUpperCase()}</span>
+          <span className="micro-label">{phaseLabel(git)}</span>
         </header>
         <p className="sync-message" title={git?.message}>
           {git?.message ?? "Initialising"}
@@ -103,13 +106,13 @@ export function Sidebar({
           </div>
         </dl>
         <button type="button" className="btn ghost tiny full" onClick={onOpenWorkspace}>
-          <IconFolder size={12} />
+          <IconFolder size={14} />
           Open workspace
         </button>
       </section>
 
       <footer className="sidebar-foot">
-        <span className="micro-label">v1.0.0</span>
+        <span className="micro-label">v{version || "2.1.0"}</span>
         <span className="path-trunc" title={workspace}>
           {workspace}
         </span>

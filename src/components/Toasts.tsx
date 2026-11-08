@@ -20,7 +20,7 @@ export function Toasts({ items, onDismiss }: ToastsProps) {
             onClick={() => onDismiss(toast.id)}
             aria-label="Dismiss"
           >
-            <IconClose size={11} />
+            <IconClose size={14} />
           </button>
         </div>
       ))}

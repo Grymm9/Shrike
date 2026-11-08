@@ -1,22 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 
-import { defaultRules, normaliseRules, rulesHash } from "./rules.js";
-import {
-  computeStats,
-  emptySession,
-  ingestIntoSession,
-  rescoreSession,
-} from "./ingest.js";
+import { emptyBountyCache, normaliseBountyCache } from "./bounties.js";
+import { emptyFilters, normaliseFilters, normaliseSort } from "./bountyFilters.js";
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STATUSES = ["interested", "working", "submitted"];
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
 
-/** Write via temp file + fsync + atomic rename. A half-written session is never visible. */
+/** Write via temp file + fsync + atomic rename. A half-written file is never visible. */
 async function atomicWrite(file, text) {
   await ensureDir(path.dirname(file));
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
@@ -39,19 +34,122 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function defaultViews() {
+  const year = String(new Date().getFullYear());
+  const base = emptyFilters();
+  return {
+    schemaVersion: 1,
+    views: [
+      {
+        id: "high-payout",
+        name: "High payout",
+        filters: normaliseFilters({ ...base, minBounty: 5000, types: ["bounty"] }),
+        sort: "maxBounty",
+      },
+      {
+        id: "new-programs",
+        name: "New this year",
+        filters: normaliseFilters({ ...base, launchedAfter: year }),
+        sort: "launched",
+      },
+      {
+        id: "vdp",
+        name: "VDPs",
+        filters: normaliseFilters({ ...base, types: ["vdp"] }),
+        sort: "reports",
+      },
+    ],
+  };
+}
+
+function cleanView(value) {
+  if (!value || typeof value !== "object") return null;
+  const id = typeof value.id === "string" ? value.id.trim().slice(0, 80) : "";
+  const name = typeof value.name === "string" ? value.name.trim().slice(0, 80) : "";
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    filters: normaliseFilters(value.filters),
+    sort: normaliseSort(value.sort),
+  };
+}
+
+function normaliseViews(raw) {
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.views)) return defaultViews();
+  const views = raw.views.map(cleanView).filter(Boolean);
+  return {
+    schemaVersion: 1,
+    views,
+  };
+}
+
+function normaliseShortlist(raw) {
+  const items = {};
+  const input = raw?.items;
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    for (const [id, value] of Object.entries(input)) {
+      if (!value || typeof value !== "object") continue;
+      if (!STATUSES.includes(value.status)) continue;
+      items[id] = {
+        id,
+        status: value.status,
+        note: typeof value.note === "string" ? value.note.slice(0, 4000) : "",
+        savedAt: typeof value.savedAt === "string" ? value.savedAt : nowIso(),
+      };
+    }
+  }
+  return { schemaVersion: 1, items };
+}
+
+function normaliseSettings(raw) {
+  const cacheMinutes = Number(raw?.prefs?.cacheMinutes);
+  const defaultViewId =
+    typeof raw?.prefs?.defaultViewId === "string" ? raw.prefs.defaultViewId : null;
+  return {
+    schemaVersion: 2,
+    sync: { autoPush: raw?.sync?.autoPush !== false },
+    prefs: {
+      cacheMinutes:
+        Number.isFinite(cacheMinutes) && cacheMinutes >= 1 && cacheMinutes <= 1440
+          ? Math.round(cacheMinutes)
+          : 15,
+      defaultSort: normaliseSort(raw?.prefs?.defaultSort),
+      defaultViewId,
+      autoCheckUpdates: raw?.prefs?.autoCheckUpdates !== false,
+    },
+  };
+}
+
 export class Store {
   constructor(workspace) {
     this.workspace = workspace;
     this.sessionsDir = path.join(workspace, "sessions");
     this.configDir = path.join(workspace, "config");
+    this.archiveDir = path.join(workspace, "archive", "engagements");
     this.settingsPath = path.join(this.configDir, "settings.json");
     this.gitStatePath = path.join(this.configDir, "git-state.json");
+    this.bountiesPath = path.join(this.configDir, "bounties.json");
+    this.viewsPath = path.join(this.configDir, "views.json");
+    this.shortlistPath = path.join(this.configDir, "shortlist.json");
     this.queue = Promise.resolve();
   }
 
   async init() {
     await ensureDir(this.sessionsDir);
     await ensureDir(this.configDir);
+
+    // Keep the synced files present so git add never fails on a fresh workspace.
+    try {
+      await fs.access(this.viewsPath);
+    } catch {
+      await this.writeViews(defaultViews());
+    }
+    try {
+      await fs.access(this.shortlistPath);
+    } catch {
+      await this.writeShortlist({ schemaVersion: 1, items: {} });
+    }
   }
 
   enqueue(fn) {
@@ -60,49 +158,37 @@ export class Store {
     return run;
   }
 
-  sessionPath(id) {
+  legacyPath(id) {
     if (!SESSION_ID_RE.test(String(id ?? ""))) {
-      throw new Error("Invalid session id");
+      throw new Error("That engagement id doesn't look right.");
     }
     return path.join(this.sessionsDir, `${id}.json`);
   }
 
   async readSettings() {
-    let raw = null;
     try {
-      raw = await readJson(this.settingsPath);
+      return normaliseSettings(await readJson(this.settingsPath));
     } catch {
-      raw = null;
+      return normaliseSettings(null);
     }
-    return {
-      schemaVersion: 1,
-      rules: raw?.rules ? normaliseRules(raw.rules) : defaultRules(),
-      sync: {
-        autoPush: raw?.sync?.autoPush !== false,
-      },
-    };
   }
 
   async writeSettings(settings) {
     return this.enqueue(async () => {
-      const clean = {
-        schemaVersion: 1,
-        rules: normaliseRules(settings.rules),
-        sync: { autoPush: settings.sync?.autoPush !== false },
-      };
+      const clean = normaliseSettings(settings);
       await atomicWrite(this.settingsPath, JSON.stringify(clean, null, 2) + "\n");
       return clean;
     });
   }
 
-  async setRules(rules) {
-    const current = await this.readSettings();
-    return this.writeSettings({ ...current, rules });
-  }
-
   async setAutoPush(enabled) {
     const current = await this.readSettings();
     return this.writeSettings({ ...current, sync: { autoPush: Boolean(enabled) } });
+  }
+
+  async setPrefs(prefs) {
+    const current = await this.readSettings();
+    return this.writeSettings({ ...current, prefs: { ...current.prefs, ...prefs } });
   }
 
   async readGitState() {
@@ -118,7 +204,94 @@ export class Store {
     await atomicWrite(this.gitStatePath, JSON.stringify(state, null, 2) + "\n");
   }
 
-  async listSessions() {
+  async readBountyCache() {
+    try {
+      return normaliseBountyCache(await readJson(this.bountiesPath));
+    } catch {
+      return emptyBountyCache();
+    }
+  }
+
+  async writeBountyCache(cache) {
+    return this.enqueue(async () => {
+      const clean = normaliseBountyCache(cache);
+      await atomicWrite(this.bountiesPath, JSON.stringify(clean, null, 2) + "\n");
+      return clean;
+    });
+  }
+
+  async readViews() {
+    try {
+      return normaliseViews(await readJson(this.viewsPath));
+    } catch {
+      return defaultViews();
+    }
+  }
+
+  async writeViews(views) {
+    return this.enqueue(async () => {
+      const clean = normaliseViews(views);
+      await atomicWrite(this.viewsPath, JSON.stringify(clean, null, 2) + "\n");
+      return clean;
+    });
+  }
+
+  async readShortlist() {
+    try {
+      return normaliseShortlist(await readJson(this.shortlistPath));
+    } catch {
+      return { schemaVersion: 1, items: {} };
+    }
+  }
+
+  async writeShortlist(shortlist) {
+    return this.enqueue(async () => {
+      const clean = normaliseShortlist(shortlist);
+      await atomicWrite(this.shortlistPath, JSON.stringify(clean, null, 2) + "\n");
+      return clean;
+    });
+  }
+
+  async setShortlist(id, patch) {
+    const current = await this.readShortlist();
+    const key = String(id ?? "");
+    if (!key) throw new Error("That bounty is missing an id.");
+    const status = STATUSES.includes(patch?.status) ? patch.status : "interested";
+    current.items[key] = {
+      id: key,
+      status,
+      note: typeof patch?.note === "string" ? patch.note.slice(0, 4000) : "",
+      savedAt: nowIso(),
+    };
+    return this.writeShortlist(current);
+  }
+
+  async removeShortlist(id) {
+    const current = await this.readShortlist();
+    delete current.items[String(id ?? "")];
+    return this.writeShortlist(current);
+  }
+
+  /**
+   * Safety copy of the two synced data files, taken immediately before an app
+   * update installs. The updater does not touch the workspace, but a local copy
+   * makes that guarantee visible and recoverable.
+   */
+  async backupSyncedData() {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dir = path.join(this.configDir, "backups", stamp);
+    await ensureDir(dir);
+    for (const file of ["views.json", "shortlist.json"]) {
+      try {
+        await fs.copyFile(path.join(this.configDir, file), path.join(dir, file));
+      } catch {
+        // A missing file simply has nothing to back up.
+      }
+    }
+    return dir;
+  }
+
+  async listLegacy() {
     let entries = [];
     try {
       entries = await fs.readdir(this.sessionsDir, { withFileTypes: true });
@@ -126,113 +299,65 @@ export class Store {
       return [];
     }
 
-    const metas = [];
+    const out = [];
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const id = entry.name.slice(0, -".json".length);
       if (!SESSION_ID_RE.test(id)) continue;
       try {
         const session = await readJson(path.join(this.sessionsDir, entry.name));
-        // A file whose payload disagrees with its filename is not trustworthy.
         if (!session || session.id !== id) continue;
-        metas.push(this.toMeta(session));
+        out.push({
+          id,
+          name: typeof session.name === "string" ? session.name : "Untitled engagement",
+          endpointCount:
+            Number.isFinite(session.stats?.ingested) && session.stats.ingested > 0
+              ? session.stats.ingested
+              : Array.isArray(session.endpoints)
+                ? session.endpoints.length
+                : 0,
+          updatedAt: typeof session.updatedAt === "string" ? session.updatedAt : nowIso(),
+        });
       } catch {
-        // Corrupt or mid-move file: skip rather than break the whole list.
+        // Corrupt or mid-move files are skipped rather than breaking the list.
       }
     }
-
-    metas.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-    return metas;
+    out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    return out;
   }
 
-  toMeta(session) {
-    const stats = session.stats ?? computeStats({}, []);
-    return {
-      id: session.id,
-      name: session.name,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      endpointCount: stats.ingested ?? 0,
-      keptCount: stats.kept ?? 0,
-      filteredCount: stats.filtered ?? 0,
-      maxScore: stats.maxScore ?? 0,
-      rulesHash: session.rulesHash ?? rulesHash(session.rulesSnapshot ?? defaultRules()),
-    };
-  }
-
-  async readSession(id) {
-    const file = this.sessionPath(id);
-    const session = await readJson(file);
-    if (!session || typeof session !== "object" || !Array.isArray(session.endpoints)) {
-      throw new Error("Session file is not a valid Shrike session");
+  async archiveLegacy(id) {
+    const source = this.legacyPath(id);
+    await ensureDir(this.archiveDir);
+    let target = path.join(this.archiveDir, `${id}.json`);
+    try {
+      await fs.access(target);
+      target = path.join(this.archiveDir, `${id}-${Date.now()}.json`);
+    } catch {
+      // No existing archive copy.
     }
-    if (session.id !== id) {
-      throw new Error("Session file id does not match its filename");
-    }
-    return session;
+    await fs.rename(source, target);
+    return true;
   }
 
-  async writeSession(session) {
-    return this.enqueue(async () => {
-      const clean = { ...session, updatedAt: nowIso() };
-      await atomicWrite(this.sessionPath(clean.id), JSON.stringify(clean, null, 2) + "\n");
-      return clean;
-    });
+  async deleteLegacy(id) {
+    await fs.unlink(this.legacyPath(id));
+    return true;
   }
 
-  async createSession(name) {
-    const settings = await this.readSettings();
-    const session = emptySession(
-      crypto.randomUUID(),
-      (name && String(name).trim().slice(0, 80)) || "Untitled session",
-      settings.rules,
-      nowIso(),
-    );
-    return this.writeSession(session);
-  }
-
-  async renameSession(id, name) {
-    return this.enqueue(async () => {
-      const session = await this.readSession(id);
-      session.name = String(name ?? "").trim().slice(0, 80) || session.name;
-      session.updatedAt = nowIso();
-      await atomicWrite(this.sessionPath(id), JSON.stringify(session, null, 2) + "\n");
-      return session;
-    });
-  }
-
-  async deleteSession(id) {
-    return this.enqueue(async () => {
-      await fs.unlink(this.sessionPath(id));
-    });
-  }
-
-  async ingest(id, raw, mode, sourceName) {
-    const settings = await this.readSettings();
-    const session = await this.readSession(id);
-    const updated = ingestIntoSession(session, raw, mode, settings.rules, sourceName, nowIso());
-    return this.writeSession(updated);
-  }
-
-  async rescore(id) {
-    const settings = await this.readSettings();
-    const session = await this.readSession(id);
-    const updated = rescoreSession(session, settings.rules, nowIso());
-    return this.writeSession(updated);
-  }
-
-  async rescoreAll() {
-    const settings = await this.readSettings();
-    const metas = await this.listSessions();
-    const updated = [];
+  async archiveAllLegacy() {
+    const metas = await this.listLegacy();
     for (const meta of metas) {
-      try {
-        const session = await this.readSession(meta.id);
-        updated.push(await this.writeSession(rescoreSession(session, settings.rules, nowIso())));
-      } catch {
-        // Skip unreadable sessions rather than aborting the batch.
-      }
+      await this.archiveLegacy(meta.id).catch(() => {});
     }
-    return updated;
+    return this.listLegacy();
+  }
+
+  async deleteAllLegacy() {
+    const metas = await this.listLegacy();
+    for (const meta of metas) {
+      await this.deleteLegacy(meta.id).catch(() => {});
+    }
+    return this.listLegacy();
   }
 }

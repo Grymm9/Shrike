@@ -1,176 +1,155 @@
 /**
- * Seeds a throwaway Shrike workspace with believable recon data for UI review.
+ * Seeds a throwaway Shrike workspace with believable bounty data for UI review.
  *
  *   SHRIKE_WORKSPACE=... node scripts/seed.mjs
  *
- * Never point this at the real workspace: it writes sessions.
+ * Never point this at the real workspace: it overwrites the bounty cache,
+ * saved views and shortlist.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 
 import { Store } from "../electron/lib/store.js";
+import { emptyFilters } from "../electron/lib/bountyFilters.js";
 
 const workspace =
   process.env.SHRIKE_WORKSPACE || path.join(os.tmpdir(), "opencode", "shrike-demo");
 
-const ACME = `# acme.io — recon 2026-11-07
-https://api.acme.io/v1/users/10294/profile
-https://api.acme.io/v1/users/10294/settings
-GET https://api.acme.io/v1/users/10294/sessions?active=true
-https://api.acme.io/v1/admin/users/10294/roles
-https://api.acme.io/v1/admin/audit-log?page=2&limit=100
-https://api.acme.io/v1/billing/invoices/9f1c2d7e-4a55-4c31-9b0e-11d2a7c9e001
-https://api.acme.io/v1/billing/invoices/9f1c2d7e-4a55-4c31-9b0e-11d2a7c9e001/pdf
-https://api.acme.io/v1/billing/payment-methods/4471
-https://api.acme.io/v1/accounts/8812/transactions?limit=50&cursor=eyJvZmZzZXQiOjUwfQ==
-https://api.acme.io/v1/accounts/8812/members?role=admin
-https://api.acme.io/v1/organizations/42/teams/7/members?role=admin&page=1
-https://api.acme.io/v1/organizations/42/billing/plan
-https://api.acme.io/v1/tenants/acme/documents/55021/download
-https://api.acme.io/v1/tenants/acme/documents/55021/versions
-https://api.acme.io/v1/tenants/globex/exports/orders?from=2026-10-01&to=2026-11-01
-https://api.acme.io/v1/orders/104881
-https://api.acme.io/v1/orders/104881/items
-https://api.acme.io/v1/orders/104881/refund
-https://api.acme.io/v1/invoices/2210/lines
-https://api.acme.io/v1/projects/prj_9f2a41/keys
-https://api.acme.io/v1/projects/prj_9f2a41/tokens
-https://api.acme.io/v1/workspaces/ws_77/members/10294
-https://api.acme.io/v1/team/invitations/8812
-https://api.acme.io/v1/internal/debug/env
-https://api.acme.io/v1/internal/feature-flags
-https://api.acme.io/graphql?query=query%20%7B%20viewer%20%7B%20id%20email%20%7D%20%7D
-https://api.acme.io/v1/search?q=invoice&scope=billing
-https://api.acme.io/v1/admin/exports/users.csv
-https://api.acme.io/v1/export/accounts?format=csv
-https://api.acme.io/v1/messages/8f14e45fceea167a5a36dedd4bea2543
-PATCH https://api.acme.io/v1/users/10294
-DELETE https://api.acme.io/v1/users/10294/sessions/771
-POST https://api.acme.io/v1/orders/104881/notes
-https://cdn.acme.io/static/app.4f2a1c.js
-https://cdn.acme.io/static/app.4f2a1c.css
-https://cdn.acme.io/assets/logo.png
-https://cdn.acme.io/assets/fonts/inter.woff2
-https://api.acme.io/health
-https://api.acme.io/healthz
-https://api.acme.io/metrics
-https://api.acme.io/robots.txt
-https://api.acme.io/favicon.ico
-https://api.acme.io/v1/status
-https://api.acme.io/v1/version
-https://api.acme.io/v1/billing/invoices/9f1c2d7e-4a55-4c31-9b0e-11d2a7c9e001.png
-https://api.acme.io/v1/orders/104881/items/1/image.jpg
-https://api.acme.io/v1/users/10294/avatar.webp
-https://api.acme.io/v1/documents/55021/render.svg
-https://api.acme.io/static/js/vendor.chunk.js
-https://api.acme.io/assets/icons/sprite.svg
-https://api.acme.io/v1/docs
-https://api.acme.io/v1/changelog
-https://api.acme.io/v1/pricing
-https://api.acme.io/v1/contact
-https://api.acme.io/v1/users/10295/profile
-https://api.acme.io/v1/users/10296/profile
-https://api.acme.io/v1/users/10297/profile
-https://api.acme.io/v1/accounts/8813/transactions
-https://api.acme.io/v1/accounts/8814/transactions
-https://api.acme.io/v1/orders/104882
-https://api.acme.io/v1/orders/104883
-https://api.acme.io/v1/invoices/2211/lines
-https://api.acme.io/v1/invoices/2212/lines
-https://api.acme.io/v1/projects/prj_9f2a42/keys
-https://api.acme.io/v1/tenants/initech/documents/55100/download
-https://api.acme.io/v1/tenants/initech/exports/users?format=ndjson
-https://api.acme.io/v1/admin/impersonate/10294
-https://api.acme.io/v1/admin/tenants/42/features
-https://api.acme.io/v1/billing/plans
-https://api.acme.io/v1/billing/upcoming-invoice
-https://api.acme.io/v1/oauth/token
-https://api.acme.io/v1/oauth/authorize?client_id=shrike&redirect_uri=https%3A%2F%2Facme.io%2Fcb
-https://api.acme.io/v1/webhooks/8812/deliveries
-https://api.acme.io/v1/audit/events?actor=10294&limit=25
-https://api.acme.io/v1/users/10294/notifications
-https://api.acme.io/v1/users/10294/api-keys
-`;
+const names = [
+  ["Shopify", "shopify", "bounty", 500, 50000, 2530, 93, "2016-03-01"],
+  ["GitLab", "gitlab", "bounty", 100, 35000, 2279, 91, "2016-02-01"],
+  ["PayPal", "paypal", "bounty", 50, 30000, 2509, 93, "2018-09-01"],
+  ["TikTok", "tiktok", "bounty", 250, 25000, 1680, 88, "2020-10-01"],
+  ["Epic Games", "epicgames", "bounty", 200, 25000, 2629, 84, "2021-10-01"],
+  ["CoinSpot", "coinspot", "bounty", 1000, 50000, 97, 96, "2021-04-01"],
+  ["Nintendo", "nintendo", "bounty", 299, 50000, 194, 72, "2016-12-01"],
+  ["Robinhood Markets", "robinhood", "bounty", 100, 25000, 150, 90, "2025-10-01"],
+  ["Temu", "temu", "bounty", 500, 25000, 35, 82, "2023-11-01"],
+  ["Vercel", "vercel", "bounty", 50, 10000, 354, 95, "2026-09-01"],
+  ["Magic Eden", "magic-eden", "bounty", 200, 10000, 97, 89, "2022-11-01"],
+  ["Scopely", "scopely", "bounty", 180, 10000, 414, 87, "2021-03-01"],
+  ["Blend Labs", "blend-labs", "bounty", 250, 7500, 13, 90, "2022-09-01"],
+  ["Six Group", "six-group", "bounty", 200, 7500, 21, 85, "2023-04-01"],
+  ["Valve", "valve", "bounty", 100, 7500, 1555, 80, "2018-05-01"],
+  ["Discourse", "discourse", "bounty", 256, 256, 285, 94, "2014-06-01"],
+  ["Node.js", "nodejs", "bounty", 500, 500, 185, 92, "2014-01-01"],
+  ["Ruby", "ruby", "bounty", 500, 500, 78, 90, "2014-01-01"],
+  ["Matomo", "matomo", "bounty", 333, 13000, 393, 86, "2018-09-01"],
+  ["Uber", "uber", "bounty", 300, 15000, 2697, 78, "2016-01-01"],
+  ["Common Codes", "common_codes", "bounty", 100, 15000, 0, 87, "2026-09-01"],
+  ["Smartsheet", "smartsheet_vdp", "vdp", null, null, 1, 95, "2026-10-01"],
+  ["XP Inc", "xp_inc_vdp", "vdp", null, null, 3, 97, "2026-10-01"],
+  ["Verisk", "verisk_vdp", "vdp", null, null, 0, 79, "2026-10-01"],
+  ["Rails", "rails", "vdp", null, null, 7, 88, "2020-01-01"],
+  ["Acme VDP", "acme_vdp", "vdp", null, null, 4, 81, "2025-01-01"],
+  ["Cloudflare", "cloudflare", "bounty", 50, 20000, 1100, 83, "2016-06-01"],
+  ["Dropbox", "dropbox", "bounty", 100, 32000, 730, 85, "2016-01-01"],
+  ["Stripe", "stripe", "bounty", 100, 30000, 1400, 92, "2016-01-01"],
+  ["Atlassian", "atlassian", "bounty", 100, 20000, 980, 80, "2017-01-01"],
+  ["GitHub", "github", "bounty", 100, 30000, 1750, 90, "2016-01-01"],
+  ["Mozilla", "mozilla", "bounty", 500, 20000, 620, 76, "2016-01-01"],
+  ["Zoom", "zoom", "bounty", 250, 20000, 410, 82, "2020-04-01"],
+  ["Yelp", "yelp", "bounty", 300, 15000, 300, 79, "2016-01-01"],
+  ["Zendesk", "zendesk", "bounty", 100, 10000, 210, 84, "2018-01-01"],
+  ["Figma", "figma", "bounty", 100, 12000, 88, 94, "2024-01-01"],
+  ["Notion", "notion", "bounty", 100, 10000, 64, 89, "2023-06-01"],
+  ["Linear", "linear", "bounty", 200, 8000, 22, 96, "2024-09-01"],
+  ["Supabase", "supabase", "bounty", 100, 8000, 40, 93, "2023-02-01"],
+  ["PlanetScale", "planetscale", "external", 300, 15000, 18, 91, "2022-06-01"],
+];
 
-const GLOBEX = `https://portal.globex.dev/api/v2/tickets/4410
-https://portal.globex.dev/api/v2/tickets/4410/messages
-https://portal.globex.dev/api/v2/tickets/4410/attachments/aa11bb22cc33dd44ee55ff66
-https://portal.globex.dev/api/v2/customers/77123/invoices
-https://portal.globex.dev/api/v2/customers/77123/contracts
-https://portal.globex.dev/api/v2/admin/customers?status=active
-https://portal.globex.dev/api/v2/internal/tasks
-https://portal.globex.dev/api/v2/reports/export?month=2026-10
-https://portal.globex.dev/api/v2/staff/8801/profile
-https://portal.globex.dev/api/v2/staff/8801/permissions
-https://portal.globex.dev/api/v2/auth/sessions?user=77123
-https://portal.globex.dev/graphql
-https://portal.globex.dev/health
-https://portal.globex.dev/static/main.css
-https://portal.globex.dev/assets/logo.png
-https://portal.globex.dev/api/v2/version
-https://portal.globex.dev/api/v2/settings
-https://portal.globex.dev/api/v2/search?q=contract
-`;
+const programs = names.map(([name, handle, type, min, max, reports, response, launched]) => ({
+  id: `hackerone:${handle}`,
+  source: "hackerone",
+  handle,
+  name,
+  url: `https://hackerone.com/${handle}`,
+  platform: "HackerOne",
+  description: null,
+  currency: "USD",
+  minBounty: min,
+  maxBounty: max,
+  averageBounty: min != null && max != null ? Math.round((min + max) / 2) : null,
+  reports,
+  responseEfficiency: response,
+  launchedAt: `${launched}T00:00:00.000Z`,
+  type,
+  tags: type === "external" ? ["External"] : type === "vdp" ? [] : ["Open"],
+}));
 
-const INITECH = `10.20.30.40/api/v1/users/1
-10.20.30.40/api/v1/users/1/roles
-10.20.30.40/api/v1/admin/export
-10.20.30.40/api/v1/billing/statements/2026-10
-10.20.30.40/api/v1/internal/health
-10.20.30.40/health
-10.20.30.40/assets/app.js
-`;
+const store = new Store(workspace);
+await store.init();
 
-function git(cwd, args) {
-  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-}
+// Make the demo reproducible: clear prior demo files before writing.
+await fs.rm(path.join(workspace, "sessions"), { recursive: true, force: true });
+await fs.rm(path.join(workspace, "archive"), { recursive: true, force: true });
+await fs.mkdir(store.sessionsDir, { recursive: true });
 
-async function main() {
-  await fs.rm(workspace, { recursive: true, force: true });
-  await fs.mkdir(workspace, { recursive: true });
-
-  const store = new Store(workspace);
-  await store.init();
-
-  const specs = [
-    { name: "Globex — HackerOne", raw: GLOBEX, source: "globex-recon.txt" },
-    { name: "Initech — private program", raw: INITECH, source: "initech-10.20.30.40.txt" },
-    { name: "Acme Corp — HackerOne", raw: ACME, source: "acme-api-2026-11-07.txt" },
-  ];
-
-  for (const spec of specs) {
-    const session = await store.createSession(spec.name);
-    await store.ingest(session.id, spec.raw, "replace", spec.source);
-    // Distinct updatedAt values so session ordering is deterministic.
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-
-  await fs.writeFile(
-    path.join(workspace, "config", "git-state.json"),
-    JSON.stringify(
-      { lastSyncAt: new Date(Date.now() - 11 * 60_000).toISOString() },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
-  );
-
-  git(workspace, ["init", "-b", "main"]);
-  git(workspace, ["remote", "add", "origin", "git@github.com:janik/acme-recon.git"]);
-
-  const sessions = await store.listSessions();
-  console.log(`Seeded ${sessions.length} sessions in ${workspace}`);
-  for (const meta of sessions) {
-    console.log(
-      `  ${meta.name}: ${meta.endpointCount} ing. / ${meta.keptCount} ranked / ${meta.filteredCount} filtered`,
-    );
-  }
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+await store.writeBountyCache({
+  schemaVersion: 1,
+  source: "hackerone",
+  fetchedAt: new Date().toISOString(),
+  scanned: programs.length,
+  programs,
 });
+
+const views = await store.readViews();
+await store.writeViews({
+  schemaVersion: 1,
+  views: [
+    ...views.views.filter((view) => view.id !== "cloud"),
+    {
+      id: "cloud",
+      name: "Cloud",
+      filters: {
+        ...emptyFilters(),
+        includeKeywords: "cloud",
+      },
+      sort: "maxBounty",
+    },
+  ],
+});
+
+await store.writeShortlist({
+  schemaVersion: 1,
+  items: {
+    "hackerone:shopify": {
+      id: "hackerone:shopify",
+      status: "working",
+      note: "GraphQL admin surface looks interesting.",
+      savedAt: "2026-11-06T10:00:00.000Z",
+    },
+    "hackerone:gitlab": {
+      id: "hackerone:gitlab",
+      status: "interested",
+      note: "Check CI runner scope.",
+      savedAt: "2026-11-07T10:00:00.000Z",
+    },
+    "hackerone:vercel": {
+      id: "hackerone:vercel",
+      status: "submitted",
+      note: "Report sent; waiting on triage.",
+      savedAt: "2026-11-05T10:00:00.000Z",
+    },
+  },
+});
+
+// One old v1 file so the archive/delete controls are visible.
+const legacyId = crypto.randomUUID();
+await fs.writeFile(
+  path.join(store.sessionsDir, `${legacyId}.json`),
+  JSON.stringify({
+    id: legacyId,
+    name: "Acme Corp — old recon",
+    updatedAt: "2026-10-01T09:00:00.000Z",
+    stats: { ingested: 64 },
+    endpoints: [],
+  }) + "\n",
+  "utf8",
+);
+
+console.log(`Seeded ${programs.length} bounties in ${workspace}`);
+console.log("Open Settings to review the old engagement file.");

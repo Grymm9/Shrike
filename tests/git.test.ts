@@ -18,6 +18,20 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+async function writeSyncedFiles(repo: string, viewName = "High payout") {
+  await fs.mkdir(path.join(repo, "config"), { recursive: true });
+  await fs.writeFile(
+    path.join(repo, "config", "views.json"),
+    JSON.stringify({ schemaVersion: 1, views: [{ id: "high", name: viewName }] }) + "\n",
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(repo, "config", "shortlist.json"),
+    JSON.stringify({ schemaVersion: 1, items: {} }) + "\n",
+    "utf8",
+  );
+}
+
 afterEach(async () => {
   for (const dir of cleanups.splice(0)) {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -25,10 +39,14 @@ afterEach(async () => {
 });
 
 describe("GitSync", () => {
-  it("initialises a repo and commits session files locally when there is no remote", async () => {
+  it("initialises a repo, ignores local data and commits synced files", async () => {
     const repo = await tempDir("shrike-sync-local-");
     const states: Array<{ phase: string; message: string }> = [];
-    const sync = new GitSync({ repo, onStatus: (s: { phase: string; message: string }) => states.push(s), autoPush: false });
+    const sync = new GitSync({
+      repo,
+      onStatus: (state: { phase: string; message: string }) => states.push(state),
+      autoPush: false,
+    });
 
     const initial = await sync.init();
     expect(initial.hasRepo).toBe(true);
@@ -36,18 +54,31 @@ describe("GitSync", () => {
 
     const ignore = await fs.readFile(path.join(repo, ".gitignore"), "utf8");
     expect(ignore).toContain("node_modules/");
-    expect(ignore).toContain("config/");
+    expect(ignore).toContain("sessions/");
+    expect(ignore).toContain("config/settings.json");
+    expect(ignore).toContain("config/bounties.json");
+    expect(ignore.split(/\r?\n/)).not.toContain("config/");
 
-    await fs.mkdir(path.join(repo, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(repo, "sessions", "a.json"), '{"id":"a"}\n', "utf8");
-
+    await writeSyncedFiles(repo);
     const state = await sync.pushNow("test: local commit");
     expect(state.phase).toBe("idle");
     expect(state.message).toMatch(/no remote configured/i);
 
     const log = git(repo, ["log", "--oneline"]);
     expect(log).toContain("test: local commit");
-    expect(states.some((s) => s.phase === "working")).toBe(true);
+    expect(states.some((item) => item.phase === "working")).toBe(true);
+  });
+
+  it("removes the old blanket config ignore rule", async () => {
+    const repo = await tempDir("shrike-sync-ignore-");
+    await fs.writeFile(path.join(repo, ".gitignore"), "config/\nsessions/*.tmp-*\n", "utf8");
+    const sync = new GitSync({ repo, onStatus: () => {}, autoPush: false });
+    await sync.init();
+
+    const ignore = await fs.readFile(path.join(repo, ".gitignore"), "utf8");
+    expect(ignore.split(/\r?\n/)).not.toContain("config/");
+    expect(ignore).toContain("config/settings.json");
+    expect(ignore.split(/\r?\n/)).not.toContain("config/views.json");
   });
 
   it("pushes to a remote once one is configured", async () => {
@@ -57,9 +88,7 @@ describe("GitSync", () => {
     const repo = await tempDir("shrike-sync-push-");
     const sync = new GitSync({ repo, onStatus: () => {}, autoPush: false });
     await sync.init();
-
-    await fs.mkdir(path.join(repo, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(repo, "sessions", "a.json"), '{"id":"a"}\n', "utf8");
+    await writeSyncedFiles(repo);
 
     git(repo, ["remote", "add", "origin", remote]);
     await sync.init();
@@ -72,15 +101,14 @@ describe("GitSync", () => {
     expect(head).toHaveLength(40);
   });
 
-  it("pulls session files written by another clone", async () => {
+  it("pulls saved views written by another clone", async () => {
     const remote = await tempDir("shrike-sync-remote2-");
     git(remote, ["init", "--bare", "-b", "main"]);
 
     const repo = await tempDir("shrike-sync-pull-");
     const sync = new GitSync({ repo, onStatus: () => {}, autoPush: false });
     await sync.init();
-    await fs.mkdir(path.join(repo, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(repo, "sessions", "a.json"), '{"id":"a"}\n', "utf8");
+    await writeSyncedFiles(repo);
     git(repo, ["remote", "add", "origin", remote]);
     await sync.init();
     await sync.pushNow("test: seed");
@@ -88,8 +116,11 @@ describe("GitSync", () => {
     const cloneParent = await tempDir("shrike-sync-clone-");
     const clone = path.join(cloneParent, "clone");
     git(cloneParent, ["clone", remote, clone]);
-    await fs.mkdir(path.join(clone, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(clone, "sessions", "b.json"), '{"id":"b"}\n', "utf8");
+    await fs.writeFile(
+      path.join(clone, "config", "views.json"),
+      JSON.stringify({ schemaVersion: 1, views: [{ id: "remote", name: "Remote view" }] }) + "\n",
+      "utf8",
+    );
     git(clone, ["add", "-A"]);
     git(clone, ["-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-m", "remote change"]);
     git(clone, ["push", "origin", "main"]);
@@ -97,8 +128,8 @@ describe("GitSync", () => {
     const state = await sync.pullNow();
     expect(state.phase).toBe("idle");
 
-    const pulled = await fs.readFile(path.join(repo, "sessions", "b.json"), "utf8");
-    expect(pulled).toContain('"id":"b"');
+    const pulled = await fs.readFile(path.join(repo, "config", "views.json"), "utf8");
+    expect(pulled).toContain("Remote view");
   });
 
   it("refuses to pull without a remote", async () => {
@@ -119,9 +150,7 @@ describe("GitSync", () => {
     const repo = await tempDir("shrike-sync-debounce-");
     const sync = new GitSync({ repo, onStatus: () => {}, autoPush: true });
     await sync.init();
-
-    await fs.mkdir(path.join(repo, "sessions"), { recursive: true });
-    await fs.writeFile(path.join(repo, "sessions", "c.json"), '{"id":"c"}\n', "utf8");
+    await writeSyncedFiles(repo);
 
     sync.schedulePush("test: debounced");
     const state = await sync.flush();

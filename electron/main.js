@@ -1,21 +1,33 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Store } from "./lib/store.js";
 import { GitSync, delay } from "./lib/git.js";
-import { defaultRules } from "./lib/rules.js";
+import { AppUpdater } from "./lib/updates.js";
+import { fetchPage } from "./lib/fetchPage.js";
+import { applyBountyView, normaliseFilters, normaliseSort } from "./lib/bountyFilters.js";
+import {
+  HACKERONE_DIRECTORY_URL,
+  MAX_PAGES,
+  bountiesToCsv,
+  hackerOneRequest,
+  normaliseHackerOne,
+  validateSourceUrl,
+} from "./lib/bounties.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || null;
-const MAX_RAW_BYTES = 20_000_000;
+const PROGRESS_CHANNEL = "bounties:progress";
+const PAGE_DELAY_MS = 120;
 
 app.setName("Shrike");
 
 let win = null;
 let store = null;
 let git = null;
+let updater = null;
 let quitting = false;
 
 function broadcast(channel, payload) {
@@ -37,47 +49,133 @@ function handle(channel, fn) {
 function resolveWorkspace() {
   if (process.env.SHRIKE_WORKSPACE) return path.resolve(process.env.SHRIKE_WORKSPACE);
   if (app.isPackaged) return path.join(app.getPath("documents"), "Shrike");
-  // Keep development sessions out of the source tree: the dev workspace is its
-  // own git repo, exactly like the packaged app's Documents folder.
+  // Keep development data out of the source tree.
   return path.join(ROOT, ".shrike-workspace");
 }
 
 async function buildBootstrap(activeId) {
-  const settings = await store.readSettings();
-  const sessions = await store.listSessions();
-
-  let activeSession = null;
-  const target = activeId || sessions[0]?.id;
-  if (target) {
-    try {
-      activeSession = await store.readSession(target);
-    } catch {
-      activeSession = null;
-    }
-  }
+  const [settings, bounties, views, shortlist, legacy] = await Promise.all([
+    store.readSettings(),
+    store.readBountyCache(),
+    store.readViews(),
+    store.readShortlist(),
+    store.listLegacy(),
+  ]);
 
   return {
+    version: app.getVersion(),
     settings,
-    sessions,
-    activeSession,
+    bounties,
+    views,
+    shortlist,
+    legacy,
     git: git.getState(),
+    update: updater.getState(),
     paths: {
       workspace: store.workspace,
-      sessions: store.sessionsDir,
       config: store.configDir,
     },
     initialView: process.env.SHRIKE_INITIAL_VIEW || null,
   };
 }
 
+async function fetchKind(kind, onPage) {
+  let cursor = null;
+  let page = 0;
+  let total = null;
+  const programs = [];
+
+  for (;;) {
+    page += 1;
+    if (page > MAX_PAGES) {
+      throw new Error("HackerOne returned more pages than expected. Try again later.");
+    }
+
+    const request = hackerOneRequest({ cursor, kind });
+    const response = await fetchPage(request.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        origin: "https://hackerone.com",
+        referer: HACKERONE_DIRECTORY_URL,
+      },
+      body: JSON.stringify(request.body),
+    });
+
+    let payload;
+    try {
+      payload = JSON.parse(response.body);
+    } catch {
+      throw new Error("HackerOne returned a response Shrike could not read.");
+    }
+
+    const result = normaliseHackerOne(payload);
+    programs.push(...result.programs);
+    if (total == null) total = result.total;
+    onPage?.({ page, loaded: programs.length, total: total ?? programs.length });
+
+    if (!result.hasNext || !result.cursor) break;
+    cursor = result.cursor;
+    await delay(PAGE_DELAY_MS);
+  }
+
+  return { programs, total: total ?? programs.length, pages: page };
+}
+
+async function fetchDirectory() {
+  broadcast(PROGRESS_CHANNEL, {
+    phase: "bounty",
+    page: 1,
+    loaded: 0,
+    total: 0,
+  });
+
+  const bounties = await fetchKind("bounty", (progress) => {
+    broadcast(PROGRESS_CHANNEL, {
+      phase: "bounty",
+      page: progress.page,
+      loaded: progress.loaded,
+      total: progress.total,
+    });
+  });
+
+  const vdps = await fetchKind("vdp", (progress) => {
+    broadcast(PROGRESS_CHANNEL, {
+      phase: "vdp",
+      page: progress.page,
+      loaded: bounties.programs.length + progress.loaded,
+      total: bounties.total + progress.total,
+    });
+  });
+
+  const combined = [...bounties.programs, ...vdps.programs];
+  const seen = new Set();
+  const programs = [];
+  for (const program of combined) {
+    if (seen.has(program.id)) continue;
+    seen.add(program.id);
+    programs.push(program);
+  }
+
+  broadcast(PROGRESS_CHANNEL, {
+    phase: "done",
+    page: bounties.pages + vdps.pages,
+    loaded: programs.length,
+    total: programs.length,
+  });
+
+  return {
+    schemaVersion: 1,
+    source: "hackerone",
+    fetchedAt: new Date().toISOString(),
+    scanned: programs.length,
+    programs,
+  };
+}
+
 function registerIpc() {
   handle("app:bootstrap", (activeId) => buildBootstrap(activeId));
-
-  handle("app:open-sessions", async () => {
-    const error = await shell.openPath(store.sessionsDir);
-    if (error) throw new Error(error);
-    return true;
-  });
 
   handle("app:open-workspace", async () => {
     const error = await shell.openPath(store.workspace);
@@ -85,30 +183,59 @@ function registerIpc() {
     return true;
   });
 
-  handle("settings:save-rules", async (rules, activeSessionId) => {
-    const settings = await store.setRules(rules);
-    let session = null;
-    if (activeSessionId) {
-      session = await store.rescore(activeSessionId);
-      git.schedulePush("shrike: rescore session against updated rules");
-    }
-    return { settings, session, sessions: await store.listSessions() };
+  handle("app:open-external", async (url) => {
+    const parsed = validateSourceUrl(url);
+    await shell.openExternal(parsed.url);
+    return true;
   });
 
-  handle("settings:reset-rules", async (activeSessionId) => {
-    const settings = await store.setRules(defaultRules());
-    let session = null;
-    if (activeSessionId) {
-      session = await store.rescore(activeSessionId);
-      git.schedulePush("shrike: rescore session against default rules");
-    }
-    return { settings, session, sessions: await store.listSessions() };
+  handle("bounties:list", () => store.readBountyCache());
+
+  handle("bounties:refresh", async () => {
+    const cache = await fetchDirectory();
+    await store.writeBountyCache(cache);
+    broadcast("bounties:changed", cache);
+    return cache;
   });
 
   handle("settings:set-autopush", async (enabled) => {
     const settings = await store.setAutoPush(Boolean(enabled));
     git.setAutoPush(settings.sync.autoPush);
     return { settings, git: git.getState() };
+  });
+
+  handle("settings:set-prefs", async (prefs) => {
+    const settings = await store.setPrefs(prefs);
+    if (typeof prefs?.autoCheckUpdates === "boolean") {
+      updater.setAutoCheck(settings.prefs.autoCheckUpdates);
+    }
+    return { settings };
+  });
+
+  handle("update:state", () => updater.getState());
+  handle("update:check", () => updater.check());
+  handle("update:download", () => updater.download());
+  handle("update:install", async () => {
+    await store.backupSyncedData();
+    return updater.install();
+  });
+
+  handle("views:save", async (views) => {
+    const saved = await store.writeViews(views);
+    git.schedulePush("shrike: update saved views");
+    return saved;
+  });
+
+  handle("shortlist:set", async ({ id, status, note } = {}) => {
+    const shortlist = await store.setShortlist(id, { status, note });
+    git.schedulePush("shrike: update shortlist");
+    return shortlist;
+  });
+
+  handle("shortlist:remove", async (id) => {
+    const shortlist = await store.removeShortlist(id);
+    git.schedulePush("shrike: update shortlist");
+    return shortlist;
   });
 
   handle("sync:push", async () => {
@@ -118,9 +245,13 @@ function registerIpc() {
 
   handle("sync:pull", async () => {
     const state = await git.pullNow();
-    const sessions = await store.listSessions();
-    broadcast("sessions:changed", sessions);
-    return { git: state, sessions };
+    const [views, shortlist, legacy] = await Promise.all([
+      store.readViews(),
+      store.readShortlist(),
+      store.listLegacy(),
+    ]);
+    broadcast("data:changed", { views, shortlist });
+    return { git: state, views, shortlist, legacy };
   });
 
   handle("sync:set-remote", async (url) => {
@@ -128,43 +259,45 @@ function registerIpc() {
     return { git: state };
   });
 
-  handle("sessions:list", () => store.listSessions());
+  handle("legacy:list", () => store.listLegacy());
 
-  handle("sessions:create", async (name) => {
-    const session = await store.createSession(name);
-    git.schedulePush("shrike: create session");
-    return { session, sessions: await store.listSessions() };
+  handle("legacy:archive", async (id) => {
+    await store.archiveLegacy(id);
+    return store.listLegacy();
   });
 
-  handle("sessions:get", (id) => store.readSession(id));
-
-  handle("sessions:rename", async (id, name) => {
-    const session = await store.renameSession(id, name);
-    git.schedulePush("shrike: rename session");
-    return { session, sessions: await store.listSessions() };
+  handle("legacy:delete", async (id) => {
+    await store.deleteLegacy(id);
+    return store.listLegacy();
   });
 
-  handle("sessions:delete", async (id) => {
-    await store.deleteSession(id);
-    git.schedulePush("shrike: delete session");
-    return { sessions: await store.listSessions() };
-  });
+  handle("legacy:archive-all", () => store.archiveAllLegacy());
+  handle("legacy:delete-all", () => store.deleteAllLegacy());
 
-  handle("sessions:ingest", async ({ id, raw, mode, sourceName } = {}) => {
-    if (typeof raw !== "string") throw new Error("No endpoint list supplied");
-    if (Buffer.byteLength(raw, "utf8") > MAX_RAW_BYTES) {
-      throw new Error("Endpoint list is larger than the 20 MB limit");
+  handle("export:csv", async ({ filters, sort } = {}) => {
+    const [cache, shortlist] = await Promise.all([
+      store.readBountyCache(),
+      store.readShortlist(),
+    ]);
+    const rows = applyBountyView(
+      cache.programs,
+      normaliseFilters(filters),
+      normaliseSort(sort),
+      new Set(Object.keys(shortlist.items)),
+    );
+    if (!rows.length) {
+      throw new Error("There are no bounties in the current view to export.");
     }
-    if (mode !== "append" && mode !== "replace") throw new Error("Invalid import mode");
-    const session = await store.ingest(id, raw, mode, sourceName || null);
-    git.schedulePush(mode === "append" ? "shrike: append endpoints" : "shrike: import endpoints");
-    return { session, sessions: await store.listSessions() };
-  });
 
-  handle("sessions:rescore", async (id) => {
-    const session = await store.rescore(id);
-    git.schedulePush("shrike: rescore session");
-    return { session, sessions: await store.listSessions() };
+    const result = await dialog.showSaveDialog(win, {
+      title: "Export bounties",
+      defaultPath: "shrike-bounties.csv",
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+
+    await fs.writeFile(result.filePath, "\uFEFF" + bountiesToCsv(rows), "utf8");
+    return { filePath: result.filePath, count: rows.length };
   });
 }
 
@@ -225,24 +358,14 @@ async function captureAndQuit() {
     }
     await delay(700);
 
-    // Screenshot-only affordances so the detail pane and import dialog can be
-    // captured without a UI automation dependency.
-    const rowIndex = Number(process.env.SHRIKE_SELECT_ROW ?? "-1");
-    if (Number.isInteger(rowIndex) && rowIndex >= 0) {
-      await win.webContents
-        .executeJavaScript(
-          `document.querySelectorAll("table.endpoints tbody tr.row")[${rowIndex}]?.click()`,
-        )
-        .catch(() => {});
-      await delay(300);
-    }
-    if (process.env.SHRIKE_OPEN_IMPORT) {
-      await win.webContents
-        .executeJavaScript(
-          `[...document.querySelectorAll("button")].find((b) => b.textContent?.includes("Import endpoints"))?.click()`,
-        )
-        .catch(() => {});
-      await delay(400);
+    // Screenshot-only hook: exercise a real update check from the packaged app.
+    if (process.env.SHRIKE_CHECK_UPDATES) {
+      await updater.check().catch(() => {});
+      if (process.env.SHRIKE_DOWNLOAD_UPDATE) {
+        await updater.download().catch(() => {});
+      }
+      await delay(3000);
+      console.log("update state", JSON.stringify(updater.getState()));
     }
 
     const image = await win.webContents.capturePage();
@@ -294,9 +417,16 @@ async function start() {
     },
   });
 
+  updater = new AppUpdater({
+    autoCheck: settings.prefs.autoCheckUpdates,
+    onStatus: (state) => broadcast("update:status", state),
+  });
+  updater.init();
+
   registerIpc();
   await git.init();
   createWindow();
+  updater.scheduleAutoCheck();
 }
 
 app.whenReady().then(start).catch((err) => {

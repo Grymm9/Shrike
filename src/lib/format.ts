@@ -1,5 +1,7 @@
+import type { BountyType } from "./types";
+
 export function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "never";
+  if (!iso) return "not yet";
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "unknown";
   const diff = Date.now() - then;
@@ -29,7 +31,7 @@ export function formatStamp(iso: string | null | undefined): string {
 }
 
 export function remoteHost(remote: string | null): string {
-  if (!remote) return "no remote";
+  if (!remote) return "Not connected";
   const cleaned = remote
     .replace(/^git@([^:]+):/, "$1/")
     .replace(/^ssh:\/\//, "")
@@ -41,6 +43,54 @@ export function plural(count: number, one: string, many = one + "s"): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
-export function scoreLabel(score: number): string {
-  return String(Math.round(score)).padStart(2, "0");
+export function formatMoney(value: number | null, currency: string | null): string {
+  if (value == null) return "—";
+  const symbol =
+    currency === "USD" ? "$" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : "";
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    const short = Number(millions.toFixed(millions >= 10 ? 0 : 1));
+    return symbol ? `${symbol}${short}M` : `${short}M${currency ? " " + currency : ""}`;
+  }
+  const short =
+    value >= 1000
+      ? `${Number((value / 1000).toFixed(value % 1000 === 0 ? 0 : 1))}k`
+      : String(Math.round(value));
+  if (symbol) return `${symbol}${short}`;
+  return currency ? `${short} ${currency}` : short;
+}
+
+export function formatPayout(
+  min: number | null,
+  max: number | null,
+  currency: string | null,
+): string {
+  const low = min ?? max;
+  const high = max ?? min;
+  if (low == null || high == null) return "—";
+  if (low === high) return formatMoney(low, currency);
+  return `${formatMoney(low, currency)} – ${formatMoney(high, currency)}`;
+}
+
+export function formatType(type: BountyType): string {
+  if (type === "vdp") return "VDP";
+  if (type === "external") return "External";
+  return "Bounty";
+}
+
+export function formatResponse(value: number | null): string {
+  return value == null ? "—" : `${Math.round(value)}%`;
+}
+
+export function formatLaunched(iso: string | null): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+export function yearOf(iso: string | null): number | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime()) ? date.getFullYear() : null;
 }

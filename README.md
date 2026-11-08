@@ -1,27 +1,25 @@
 # Shrike
 
-Local-first endpoint triage for bug bounty recon. Paste a raw recon list, filter it with
-rules you control, score what remains, and work down a ranked dashboard. Sessions are plain
-JSON, committed and pushed to your own GitHub repo in the background.
+Local-first bounty discovery for HackerOne. Load the public directory once, filter it
+against criteria you set, save the programs worth your time, and push those choices to your
+own Git remote so another machine or person can pull them.
 
-Everything runs on your machine. **Shrike v1 never sends traffic to a target** — it only
-parses, filters and ranks lists you already have.
+Shrike never contacts the companies in the directory. It reads HackerOne's public listings,
+then works entirely on the local copy.
 
 ## Run the app
 
-Prebuilt Windows binaries are in `release/`:
+Prebuilt Windows installer:
 
 | File | Use |
 | --- | --- |
-| `Shrike-1.0.0-Portable.exe` | Double-click to run. No install; extracts to a temp dir on launch. |
-| `Shrike-Setup-1.0.0.exe` | Installer: choose a directory, Start Menu + desktop shortcut. |
+| `Shrike-Setup-2.1.0.exe` | One-click per-user installer: Start Menu + desktop shortcut. |
 
-Data (sessions, settings) always lives in `Documents\Shrike`, not next to the exe, so both
-builds share the same workspace.
-
-The binaries are unsigned, so Windows SmartScreen may show "Windows protected your PC":
-**More info → Run anyway**. Some antivirus products also flag unsigned NSIS/portable
-bundles; that is expected until the build is code-signed.
+The installed build is the only supported distribution. It updates itself from GitHub
+Releases; the portable build was removed because a running portable exe cannot replace
+itself. Data lives in `Documents\Shrike`, not next to the exe, so app updates never touch
+your saved views or shortlist. The installer is unsigned, so SmartScreen may warn on first
+run: **More info → Run anyway**.
 
 From source:
 
@@ -34,34 +32,81 @@ npm run dev
 
 - Node.js 20+ and npm (development)
 - `git` on `PATH`
-- A GitHub repo if you want background sync (optional — everything works offline)
+- A Git remote if you want to sync saved views and the shortlist (optional)
 
-## What v1 does
+## What it does
 
-- **Ingest** full URLs, `host/path`, path-only lines and optional `GET`/`POST`/… prefixes.
-  Duplicates and unparseable lines are counted, not silently dropped.
-- **Filter** by ignored file extensions (`.css`, `.png`, …) and ignored path segments
-  (`/static`, `/health`, …). Segment rules match whole segments, so `/health` does not
-  swallow `/healthcare`.
-- **Score** with configurable weights: numeric IDs, UUIDs, sensitive object parameters,
-  query parameters, path depth, plus keyword weights you define.
-- **Rank** live in the dashboard with search, a score floor, ranked/filtered/all views and
-  a per-endpoint score breakdown.
-- **Edit rules** in the GUI. Changing rules re-scores the active session immediately;
-  sessions scored under older rules are flagged `stale`.
-- **Sync** sessions to GitHub automatically, with a manual **Sync / Fetch Latest** button.
+- **Load HackerOne** — reads every public paying bounty and VDP, about 449 programs across
+  18 pages. One request per page, cached locally.
+- **Filter** by top payout, program type (bounty / VDP / external), minimum resolved reports,
+  minimum response efficiency, launch year, include/exclude keywords and shortlist state.
+- **Save views** — name a filter combination and reapply it with one click. Three starter
+  views are created on first run: High payout, New this year and VDPs.
+- **Shortlist** — star programs, set a status (Interested / Working on it / Submitted) and
+  keep notes.
+- **Export** the current view as CSV.
+- **Sync** saved views and shortlist notes with Git from **Settings**.
+- **Update** the installed app from public GitHub Releases, without touching saved data.
 
-v1 does not make HTTP requests, run scanners, or call external APIs. It is a triage surface
-for lists produced by your own recon.
+Filters apply instantly to the full cached list. There is no Apply button and no partial-page
+filtering; “42 of 449” means the filter saw all 449.
 
 ## Using it
 
-1. Create a session (name it after the program).
-2. **Import endpoints** — paste, drop a `.txt`/`.csv`, or load a file. Replace or append.
-3. Work the **Ranked** tab. `↑`/`↓` move the selection, `Esc` closes the detail pane.
-4. Tune **Rules & sync** when the ranking does not match your instinct. `Save & re-score`
-   applies the new rules to the active session without re-importing.
-5. **Sync / Fetch Latest** pulls `origin/main` and reloads sessions from disk.
+1. Open **Bounties** and click **Read HackerOne directory** on first run.
+2. Set filters with the **Filters** button. Remove an active filter by clicking its chip.
+3. Save a combination as a view when you want to come back to it.
+4. Star interesting programs. Edit status and notes from the detail pane or the **Saved** tab.
+5. Open **Settings** to configure Git sync, the cache age, default sort and default view.
+6. Use **CSV** in the toolbar to export exactly what is on screen.
+
+Keyboard: `/` focuses the bounty search.
+
+## App updates
+
+The installed build checks public GitHub Releases (`Grymm9/Shrike`) and can download and
+install a newer version from **Settings → App updates**.
+
+- **Check on launch** is on by default. It only notifies; nothing downloads until you click.
+- **Check for updates** → **Download v…** → **Restart and install**.
+- The NSIS installer replaces the app files only. Saved views, shortlist notes and the bounty
+  cache in `Documents\Shrike` are never deleted or replaced.
+- Only the installed build can self-update. There is no portable build.
+- The repository and its releases must be public; the updater needs no token.
+- First install of 2.1.0 is manual. Versions after that can update in place.
+
+## Publishing a release
+
+From a clean version bump:
+
+```
+npm version patch
+npm run release        # needs GH_TOKEN with repo access
+```
+
+Or push a tag and let GitHub Actions build and publish:
+
+```
+git push
+git tag v2.1.1
+git push origin v2.1.1
+```
+
+`.github/workflows/release.yml` runs typecheck/tests, builds the installer, and publishes
+`Shrike-Setup-<version>.exe`, its blockmap and `latest.yml` to GitHub Releases. The release
+must be published, not a draft, before other installs can see it.
+
+## Filter semantics
+
+- **Payout** compares against the program's top payout. “At least $5,000” means the top
+  payout is $5,000 or more.
+- **Type** — leave all unchecked to include every type.
+- **Reports** — minimum resolved reports.
+- **Response** — minimum response-efficiency percentage; programs without the figure are
+  excluded when a minimum is set.
+- **Launched after** — four-digit year.
+- **Keywords** — comma or space separated. Include terms must all match; exclude terms must
+  none match. Matching covers name, handle, platform, type and tags.
 
 ## Local storage
 
@@ -73,92 +118,88 @@ for lists produced by your own recon.
 
 ```
 <workspace>/
-  sessions/<uuid>.json     # one file per session: endpoints, rules snapshot, stats
-  config/settings.json     # rules and sync preferences (gitignored)
+  config/bounties.json     # cached HackerOne listings (gitignored)
+  config/views.json        # saved filter views (synced)
+  config/shortlist.json    # saved programs, statuses and notes (synced)
+  config/settings.json     # Git auto-push, defaults (gitignored)
   config/git-state.json    # last successful sync timestamp (gitignored)
+  config/backups/          # pre-update copies of views/shortlist (gitignored)
+  sessions/                # old v1 engagement files (ignored, archive/delete in Settings)
+  archive/engagements/     # archived v1 files (ignored)
 ```
 
-Session writes go to a temp file, `fsync`, then atomic rename, so a crash cannot leave a
-half-written session. Corrupt session files are skipped instead of breaking the list.
-Each session records a `rulesHash` so you can tell whether its scores match current rules.
+Atomic writes go to a temp file, `fsync`, then rename. Corrupt files fall back to defaults
+instead of breaking startup.
 
-## GitHub sync
+## Git sync
 
-1. Create an empty repository (private is fine).
-2. Open **Rules & sync**, paste the remote (`git@github.com:you/shrike-sessions.git` or an
-   `https://` URL), and click **Save remote**.
-3. Import or edit anything — Shrike stages `sessions/` and `.gitignore`, commits as
-   `Shrike <shrike@local>`, and pushes to `origin main` after a short debounce.
-4. **Sync / Fetch Latest** runs `git pull --rebase --autostash origin main` and refreshes
-   the dashboard.
+Git sync is for **data only**: saved views and shortlist notes. App binaries are delivered
+through GitHub Releases, not through this remote.
 
-Only `sessions/` and `.gitignore` are committed; settings and credentials stay local.
-Push and pull are serialised. Offline, missing-remote, auth and non-fast-forward failures
-are surfaced in the sidebar/topbar without losing local work. Git runs with terminal
-prompts disabled, so configure a credential helper or SSH key for HTTPS/SSH remotes.
+1. Open **Settings → Git sync**.
+2. Paste an `https://`, `ssh://` or `git@` remote and click **Save remote**.
+3. Saved views and shortlist notes are committed as `Shrike <shrike@local>` and pushed to
+   `origin main` after a short debounce, or immediately with **Push changes**.
+4. **Fetch latest** pulls with rebase and reloads views and shortlist.
 
-If the remote has diverged, the pull is rebased; on conflict the rebase is aborted and the
-error is reported. Resolve it in a terminal, then sync again.
+Only `config/views.json`, `config/shortlist.json` and `.gitignore` are committed. The bounty
+cache, settings and credentials stay local. Auto-push can be turned off; manual push still
+works.
 
-## Scoring
+## Upgrading from v1
 
-Score is a weighted sum, not a percentage. Defaults:
+v1 endpoint engagements are not deleted. They are listed in **Settings → Old engagement
+files**, where each file can be archived to `archive/engagements/` or deleted. The endpoint
+dashboard, scoring engine, import dialog and Rules section are gone.
 
-| Signal | Weight | Cap |
-| --- | --- | --- |
-| Base | 5 | per endpoint |
-| Numeric path segment (`/orders/1042`) | 12 | ×2 segments |
-| UUID path segment | 10 | ×2 segments |
-| Sensitive param (`order_id`, `user_id`, …) | 8 | once |
-| Query parameters | 2 | ×3 params |
-| Depth | 3 | ×3 segments past three |
-| Keyword (`admin`, `billing`, …) | per keyword | once per keyword |
+If old session files were already committed to your Git remote, archiving or deleting them
+locally does not remove them from that remote. Remove them with Git when you are ready.
 
-Keywords match whole tokens or token prefixes (4+ characters), so `user` matches `users`
-but not `username`-unrelated tokens. Every contribution appears in the detail pane with its
-delta, so a score is always explainable.
+## HackerOne limits
+
+- HackerOne's public directory is the only source in v2. Other platforms can be added as
+  adapters later.
+- Scope and asset types are not in the directory payload. Shrike does not fetch every
+  program page; use **Open on HackerOne** for the full scope.
+- Listings behind a login, or pages HackerOne blocks, are unavailable.
+- The reader makes one request per page, caches the result, and sends no cookies. Use it
+  within HackerOne's terms.
 
 ## Development
 
 ```
 npm run dev        # Vite dev server + Electron
-npm test           # engine tests + real git init/commit/push/pull tests
+npm test           # adapter, filter, store and real git tests
 npm run typecheck  # strict TypeScript across renderer and tests
 npm run build      # production renderer bundle
 npm start          # run the production bundle in Electron
-npm run dist       # icon + Windows installer and portable exe in release/
+npm run dist       # build the installer + latest.yml (no publish)
+npm run release    # build and publish to GitHub Releases (needs GH_TOKEN)
 ```
 
-The engine lives in `electron/lib` as pure ES modules. The Electron main process and the
-React renderer import the *same* modules, so rule previews in Settings and the import
-dialog cannot drift from authoritative scoring.
+The adapters and filter engine live in `electron/lib` as pure ES modules. The main process
+and renderer share the filter code, so CSV export cannot disagree with the table.
 
 Demo data for UI work (never point this at your real workspace):
 
 ```
 npm run seed:demo
-SHRIKE_WORKSPACE=%TEMP%\opencode\shrike-demo npm run shot -- shots/dashboard.png dashboard
+SHRIKE_WORKSPACE=%TEMP%\opencode\shrike-demo npm run shot -- shots/bounties.png bounties
 ```
-
-`SHRIKE_SELECT_ROW=0` and `SHRIKE_OPEN_IMPORT=1` are screenshot-only hooks for the detail
-pane and import dialog.
 
 ## Layout
 
 ```
-electron/main.js        window, IPC, workspace resolution, screenshot harness
-electron/preload.cjs    typed window.shrike bridge (contextIsolation + sandbox)
-electron/lib/rules.js   rule defaults, normalisation, stable rules hash
-electron/lib/ingest.js  parsing, filtering, scoring, ranking
-electron/lib/store.js   atomic JSON store, settings, session lifecycle
-electron/lib/git.js     debounced auto-push, pull/rebase, error classification
-src/                    React UI (dashboard, rules, sessions, import dialog)
-tests/                  engine and git integration tests
+electron/main.js              window, IPC, full-directory refresh, CSV export
+electron/preload.cjs          typed window.shrike bridge (contextIsolation + sandbox)
+electron/lib/bounties.js      HackerOne query, normalisation, cache and CSV shape
+electron/lib/bountyFilters.js filtering, sorting, saved-view metadata
+electron/lib/fetchPage.js     capped, redirect-checked HTTP reader
+electron/lib/store.js         atomic JSON store, views, shortlist, legacy files
+electron/lib/git.js           debounced auto-push, pull/rebase, error classification
+electron/lib/updates.js       GitHub Releases updater for the installed build
+src/components/BountiesView   board, filters, detail pane, progress
+src/components/Saved…         shortlist with status and notes
+src/components/SettingsPanel  updates, Git sync, preferences, archive/delete
+tests/                        adapter, filter, store and git integration tests
 ```
-
-## v1 limits
-
-- One user, one workspace, no server component.
-- No live requests, no scanner integration, no HackerOne API calls — lists are imported.
-- No conflict-resolution UI (rebases are aborted on conflict).
-- Settings are per machine and intentionally not synced.

@@ -1,8 +1,9 @@
 {
   "name": "shrike",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "private": true,
-  "description": "Local-first endpoint triage for bug bounty recon: filter, score, rank, sync.",
+  "description": "Local-first bounty discovery for HackerOne: filter programs, save a shortlist, sync with Git.",
+  "repository": "https://github.com/Grymm9/Shrike",
   "type": "module",
   "main": "electron/main.js",
   "author": "Shrike",
@@ -20,9 +21,11 @@
     "shot": "node scripts/shot.cjs",
     "seed:demo": "node scripts/seed.mjs",
     "icon": "node scripts/make-icon.mjs",
-    "dist": "npm run build && npm run icon && electron-builder --win"
+    "dist": "npm run build && npm run icon && electron-builder --win --publish never",
+    "release": "npm run build && npm run icon && electron-builder --win --publish always"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -52,18 +55,24 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ]
     },
     "nsis": {
       "artifactName": "Shrike-Setup-${version}.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "shortcutName": "Shrike"
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Shrike",
+      "deleteAppDataOnUninstall": false
     },
-    "portable": {
-      "artifactName": "Shrike-${version}-Portable.${ext}"
-    }
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Grymm9",
+        "repo": "Shrike",
+        "releaseType": "release"
+      }
+    ]
   }
 }
