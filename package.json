@@ -1,6 +1,6 @@
 {
   "name": "shrike",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "private": true,
   "description": "Local-first bounty discovery for HackerOne: filter programs, save a shortlist, sync with Git.",
   "repository": "https://github.com/Grymm9/Shrike",
@@ -25,9 +25,10 @@
     "release": "npm run build && npm run icon && electron-builder --win --publish always"
   },
   "dependencies": {
-    "electron-updater": "^6.8.11",
+    "js-yaml": "^5.5.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "semver": "^7.8.6"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
