@@ -1,15 +1,14 @@
 /**
  * GitHub Releases updater for the installed (NSIS) build.
  *
- * We talk to the GitHub REST API rather than the browser download route.
- * GitHub sometimes returns 404 on
- * `github.com/<owner>/<repo>/releases/download/...` for several minutes after
- * publishing while the API asset endpoint is already usable. Using the API
- * asset URL with `Accept: application/octet-stream` avoids that race.
+ * GitHub's release asset routes are inconsistent immediately after publishing:
+ * the REST API asset endpoint and the browser download route can disagree for
+ * minutes, and the asset list can lag. This updater tries the API URL first and
+ * falls back to the canonical browser URL, then verifies the SHA-512 from
+ * latest.yml before launching the installer.
  *
- * The downloaded installer is verified against the SHA-512 in latest.yml, then
- * launched. Saved data lives in Documents\Shrike, outside the install directory,
- * and is backed up before install by the main process.
+ * Saved data lives in Documents\Shrike, outside the install directory, and is
+ * backed up by the main process before install.
  */
 
 import { app } from "electron";
@@ -34,9 +33,8 @@ const API_TIMEOUT_MS = 20_000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
 
 function cleanNotes(notes) {
-  if (!notes) return null;
-  if (typeof notes === "string") return notes.slice(0, MAX_NOTES);
-  return null;
+  if (!notes || typeof notes !== "string") return null;
+  return notes.slice(0, MAX_NOTES);
 }
 
 function friendlyError(error) {
@@ -75,8 +73,45 @@ function baseState() {
   };
 }
 
-function assetUrl(asset) {
-  return asset?.url;
+function browserAssetUrl(tag, name) {
+  return `https://github.com/${OWNER}/${REPO}/releases/download/${encodeURIComponent(
+    String(tag || ""),
+  )}/${encodeURIComponent(name)}`;
+}
+
+function assetUrls(release, name) {
+  const asset = Array.isArray(release.assets)
+    ? release.assets.find((item) => item.name === name)
+    : null;
+  const urls = [];
+  if (asset?.url) urls.push(asset.url);
+  if (release.tag_name) urls.push(browserAssetUrl(release.tag_name, name));
+  return [...new Set(urls)];
+}
+
+async function fetchFirst(urls, timeoutMs, label) {
+  let lastError = null;
+
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "user-agent": USER_AGENT,
+          accept: "application/octet-stream",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) {
+        throw new Error(`GitHub returned HTTP ${response.status} for ${label}.`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error(`No download URL was available for ${label}.`);
 }
 
 async function fetchRelease() {
@@ -106,22 +141,6 @@ async function fetchRelease() {
     throw new Error("No published GitHub release was found yet.");
   }
   return release;
-}
-
-async function fetchAsset(asset, timeoutMs = API_TIMEOUT_MS) {
-  if (!asset?.url) throw new Error("The release asset is missing its API URL.");
-  const response = await fetch(asset.url, {
-    headers: {
-      "user-agent": USER_AGENT,
-      accept: "application/octet-stream",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) {
-    throw new Error(`GitHub returned HTTP ${response.status} for ${asset.name}.`);
-  }
-  return response;
 }
 
 function parseManifest(text) {
@@ -180,7 +199,7 @@ export class AppUpdater {
   }
 
   init() {
-    // The custom API updater needs no event wiring.
+    // No event wiring is needed for the API-based updater.
   }
 
   setAutoCheck(enabled) {
@@ -220,24 +239,25 @@ export class AppUpdater {
 
     try {
       const release = await fetchRelease();
-      const manifestAsset = release.assets?.find((asset) => asset.name === "latest.yml");
-      if (!manifestAsset) throw new Error("The latest release is missing latest.yml.");
+      const manifestUrls = assetUrls(release, "latest.yml");
+      if (!manifestUrls.length) {
+        throw new Error("The latest release is missing latest.yml.");
+      }
 
-      const manifestResponse = await fetchAsset(manifestAsset);
+      const manifestResponse = await fetchFirst(
+        manifestUrls,
+        API_TIMEOUT_MS,
+        "latest.yml",
+      );
       const manifest = parseManifest(await manifestResponse.text());
 
-      let installer =
-        release.assets?.find((asset) => asset.name === manifest.fileName) ?? null;
-      if (!installer) {
-        installer =
-          release.assets?.find(
-            (asset) =>
-              typeof asset.name === "string" &&
-              /\.exe$/i.test(asset.name) &&
-              asset.name.startsWith("Shrike-Setup"),
-          ) ?? null;
+      const installerAsset = Array.isArray(release.assets)
+        ? release.assets.find((asset) => asset.name === manifest.fileName)
+        : null;
+      const installerUrls = assetUrls(release, manifest.fileName);
+      if (!installerUrls.length) {
+        throw new Error("The latest release is missing its installer.");
       }
-      if (!installer) throw new Error("The latest release is missing its installer.");
 
       if (!semver.gt(manifest.version, app.getVersion())) {
         this.pending = null;
@@ -254,10 +274,10 @@ export class AppUpdater {
 
       this.pending = {
         version: manifest.version,
-        assetUrl: assetUrl(installer),
-        fileName: installer.name || manifest.fileName,
+        urls: installerUrls,
+        fileName: manifest.fileName,
         sha512: manifest.sha512,
-        size: installer.size || manifest.size,
+        size: installerAsset?.size || manifest.size,
         notes: cleanNotes(release.body),
       };
       this.installerPath = null;
@@ -285,7 +305,7 @@ export class AppUpdater {
       return this.getState();
     }
     if (this.state.status === "downloading") return this.getState();
-    if (!this.pending?.assetUrl) {
+    if (!this.pending?.urls?.length) {
       this.emit({
         status: "error",
         message: "Check for updates before downloading an installer.",
@@ -302,7 +322,11 @@ export class AppUpdater {
       await fs.mkdir(dir, { recursive: true });
       await fs.rm(target, { force: true });
 
-      const response = await fetchAsset({ url: this.pending.assetUrl }, DOWNLOAD_TIMEOUT_MS);
+      const response = await fetchFirst(
+        this.pending.urls,
+        DOWNLOAD_TIMEOUT_MS,
+        this.pending.fileName,
+      );
       if (!response.body) throw new Error("GitHub returned an empty installer.");
 
       const total =
@@ -373,7 +397,8 @@ export class AppUpdater {
     } catch (error) {
       this.emit({
         status: "error",
-        message: error instanceof Error ? error.message : "Could not start the installer.",
+        message:
+          error instanceof Error ? error.message : "Could not start the installer.",
       });
       return false;
     }

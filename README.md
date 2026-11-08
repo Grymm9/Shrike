@@ -13,7 +13,7 @@ Prebuilt Windows installer:
 
 | File | Use |
 | --- | --- |
-| `Shrike-Setup-2.1.1.exe` | One-click per-user installer: Start Menu + desktop shortcut. |
+| `Shrike-Setup-2.1.2.exe` | One-click per-user installer: Start Menu + desktop shortcut. |
 
 The installed build is the only supported distribution. It updates itself from GitHub
 Releases; the portable build was removed because a running portable exe cannot replace
@@ -73,7 +73,7 @@ install a newer version from **Settings → App updates**.
   cache in `Documents\Shrike` are never deleted or replaced.
 - Only the installed build can self-update. There is no portable build.
 - The repository and its releases must be public; the updater needs no token.
-- First install of 2.1.1 is manual. Versions after that can update in place.
+- First install of 2.1.2 is manual. Versions after that can update in place.
 
 ## Publishing a release
 
@@ -88,8 +88,8 @@ Or push a tag and let GitHub Actions build and publish:
 
 ```
 git push
-git tag v2.1.1
-git push origin v2.1.1
+git tag v2.1.2
+git push origin v2.1.2
 ```
 
 `.github/workflows/release.yml` runs typecheck/tests, builds the installer, and publishes
