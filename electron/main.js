@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 import { Store } from "./lib/store.js";
-import { GitSync, delay } from "./lib/git.js";
 import { AppUpdater } from "./lib/updates.js";
 import { fetchPage } from "./lib/fetchPage.js";
 import { applyBountyView, normaliseFilters, normaliseSort } from "./lib/bountyFilters.js";
@@ -13,11 +13,16 @@ import {
   MAX_PAGES,
   bountiesToCsv,
   hackerOneRequest,
+  normaliseBugcrowd,
   normaliseHackerOne,
+  normaliseYesWeHack,
   validateSourceUrl,
 } from "./lib/bounties.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+const PKG_VERSION = require("../package.json").version;
+const APP_VERSION = app.isPackaged ? app.getVersion() : PKG_VERSION;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || null;
 const PROGRESS_CHANNEL = "bounties:progress";
 const PAGE_DELAY_MS = 120;
@@ -26,9 +31,12 @@ app.setName("Shrike");
 
 let win = null;
 let store = null;
-let git = null;
 let updater = null;
 let quitting = false;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function broadcast(channel, payload) {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -49,27 +57,28 @@ function handle(channel, fn) {
 function resolveWorkspace() {
   if (process.env.SHRIKE_WORKSPACE) return path.resolve(process.env.SHRIKE_WORKSPACE);
   if (app.isPackaged) return path.join(app.getPath("documents"), "Shrike");
-  // Keep development data out of the source tree.
   return path.join(ROOT, ".shrike-workspace");
 }
 
 async function buildBootstrap(activeId) {
-  const [settings, bounties, views, shortlist, legacy] = await Promise.all([
-    store.readSettings(),
-    store.readBountyCache(),
-    store.readViews(),
-    store.readShortlist(),
-    store.listLegacy(),
-  ]);
+  const [settings, hackerone, bugcrowd, yeswehack, views, shortlist, legacy] =
+    await Promise.all([
+      store.readSettings(),
+      store.readBountyCache("hackerone"),
+      store.readBountyCache("bugcrowd"),
+      store.readBountyCache("yeswehack"),
+      store.readViews(),
+      store.readShortlist(),
+      store.listLegacy(),
+    ]);
 
   return {
-    version: app.getVersion(),
+    version: APP_VERSION,
     settings,
-    bounties,
+    bounties: { hackerone, bugcrowd, yeswehack },
     views,
     shortlist,
     legacy,
-    git: git.getState(),
     update: updater.getState(),
     paths: {
       workspace: store.workspace,
@@ -123,17 +132,19 @@ async function fetchKind(kind, onPage) {
   return { programs, total: total ?? programs.length, pages: page };
 }
 
-async function fetchDirectory() {
+async function fetchHackerOne(onProgress) {
   broadcast(PROGRESS_CHANNEL, {
     phase: "bounty",
+    source: "hackerone",
     page: 1,
     loaded: 0,
     total: 0,
   });
 
   const bounties = await fetchKind("bounty", (progress) => {
-    broadcast(PROGRESS_CHANNEL, {
+    onProgress({
       phase: "bounty",
+      source: "hackerone",
       page: progress.page,
       loaded: progress.loaded,
       total: progress.total,
@@ -141,36 +152,136 @@ async function fetchDirectory() {
   });
 
   const vdps = await fetchKind("vdp", (progress) => {
-    broadcast(PROGRESS_CHANNEL, {
+    onProgress({
       phase: "vdp",
+      source: "hackerone",
       page: progress.page,
       loaded: bounties.programs.length + progress.loaded,
       total: bounties.total + progress.total,
     });
   });
 
-  const combined = [...bounties.programs, ...vdps.programs];
-  const seen = new Set();
+  return [...bounties.programs, ...vdps.programs];
+}
+
+async function fetchBugcrowdCategory(category, onProgress, offset, baseTotal) {
+  let page = 1;
+  let total = null;
   const programs = [];
-  for (const program of combined) {
+
+  for (;;) {
+    if (page > MAX_PAGES) throw new Error("Bugcrowd returned more pages than expected.");
+    const response = await fetchPage(
+      `https://bugcrowd.com/engagements.json?category=${category}&page=${page}`,
+      { headers: { accept: "application/json" } },
+    );
+    let payload;
+    try {
+      payload = JSON.parse(response.body);
+    } catch {
+      throw new Error("Bugcrowd returned a response Shrike could not read.");
+    }
+
+    const result = normaliseBugcrowd(payload);
+    programs.push(...result.programs);
+    if (total == null) total = result.total;
+
+    onProgress({
+      phase: "programs",
+      source: "bugcrowd",
+      page,
+      loaded: offset + programs.length,
+      total: (baseTotal ?? 0) + (total ?? programs.length),
+    });
+
+    const limit = Number(payload?.paginationMeta?.limit) || 24;
+    if (!result.programs.length || page * limit >= (total ?? programs.length)) break;
+    page += 1;
+    await delay(PAGE_DELAY_MS);
+  }
+
+  return { programs, total: total ?? programs.length };
+}
+
+async function fetchBugcrowd(onProgress) {
+  const bounties = await fetchBugcrowdCategory("bug_bounty", onProgress, 0, 0);
+  const vdps = await fetchBugcrowdCategory(
+    "vdp",
+    onProgress,
+    bounties.programs.length,
+    bounties.total,
+  );
+  return [...bounties.programs, ...vdps.programs];
+}
+
+async function fetchYesWeHack(onProgress) {
+  let page = 1;
+  let total = null;
+  let pages = 1;
+  const programs = [];
+
+  for (;;) {
+    if (page > MAX_PAGES) throw new Error("YesWeHack returned more pages than expected.");
+    const response = await fetchPage(`https://api.yeswehack.com/programs?page=${page}`, {
+      headers: { accept: "application/json" },
+    });
+    let payload;
+    try {
+      payload = JSON.parse(response.body);
+    } catch {
+      throw new Error("YesWeHack returned a response Shrike could not read.");
+    }
+
+    const result = normaliseYesWeHack(payload);
+    programs.push(...result.programs);
+    if (total == null) total = result.total;
+    pages = result.pages || 1;
+
+    onProgress({
+      phase: "programs",
+      source: "yeswehack",
+      page,
+      loaded: programs.length,
+      total: total ?? programs.length,
+    });
+
+    if (page >= pages || !result.programs.length) break;
+    page += 1;
+    await delay(PAGE_DELAY_MS);
+  }
+
+  return programs;
+}
+
+async function fetchSource(source, onProgress) {
+  const programs = await (source === "bugcrowd"
+    ? fetchBugcrowd(onProgress)
+    : source === "yeswehack"
+      ? fetchYesWeHack(onProgress)
+      : fetchHackerOne(onProgress));
+
+  const seen = new Set();
+  const unique = [];
+  for (const program of programs) {
     if (seen.has(program.id)) continue;
     seen.add(program.id);
-    programs.push(program);
+    unique.push(program);
   }
 
   broadcast(PROGRESS_CHANNEL, {
     phase: "done",
-    page: bounties.pages + vdps.pages,
-    loaded: programs.length,
-    total: programs.length,
+    source,
+    page: 0,
+    loaded: unique.length,
+    total: unique.length,
   });
 
   return {
     schemaVersion: 1,
-    source: "hackerone",
+    source,
     fetchedAt: new Date().toISOString(),
-    scanned: programs.length,
-    programs,
+    scanned: unique.length,
+    programs: unique,
   };
 }
 
@@ -189,19 +300,18 @@ function registerIpc() {
     return true;
   });
 
-  handle("bounties:list", () => store.readBountyCache());
+  handle("bounties:list", (source) => store.readBountyCache(source || "hackerone"));
 
-  handle("bounties:refresh", async () => {
-    const cache = await fetchDirectory();
+  handle("bounties:refresh", async (source) => {
+    const chosen = ["hackerone", "bugcrowd", "yeswehack"].includes(source)
+      ? source
+      : "hackerone";
+    const cache = await fetchSource(chosen, (progress) =>
+      broadcast(PROGRESS_CHANNEL, progress),
+    );
     await store.writeBountyCache(cache);
     broadcast("bounties:changed", cache);
     return cache;
-  });
-
-  handle("settings:set-autopush", async (enabled) => {
-    const settings = await store.setAutoPush(Boolean(enabled));
-    git.setAutoPush(settings.sync.autoPush);
-    return { settings, git: git.getState() };
   });
 
   handle("settings:set-prefs", async (prefs) => {
@@ -212,6 +322,26 @@ function registerIpc() {
     return { settings };
   });
 
+  handle("views:save", (views) => store.writeViews(views));
+
+  handle("shortlist:set", ({ id, status, note } = {}) =>
+    store.setShortlist(id, { status, note }),
+  );
+
+  handle("shortlist:remove", (id) => store.removeShortlist(id));
+
+  handle("legacy:list", () => store.listLegacy());
+  handle("legacy:archive", async (id) => {
+    await store.archiveLegacy(id);
+    return store.listLegacy();
+  });
+  handle("legacy:delete", async (id) => {
+    await store.deleteLegacy(id);
+    return store.listLegacy();
+  });
+  handle("legacy:archive-all", () => store.archiveAllLegacy());
+  handle("legacy:delete-all", () => store.deleteAllLegacy());
+
   handle("update:state", () => updater.getState());
   handle("update:check", () => updater.check());
   handle("update:download", () => updater.download());
@@ -220,63 +350,12 @@ function registerIpc() {
     return updater.install();
   });
 
-  handle("views:save", async (views) => {
-    const saved = await store.writeViews(views);
-    git.schedulePush("shrike: update saved views");
-    return saved;
-  });
-
-  handle("shortlist:set", async ({ id, status, note } = {}) => {
-    const shortlist = await store.setShortlist(id, { status, note });
-    git.schedulePush("shrike: update shortlist");
-    return shortlist;
-  });
-
-  handle("shortlist:remove", async (id) => {
-    const shortlist = await store.removeShortlist(id);
-    git.schedulePush("shrike: update shortlist");
-    return shortlist;
-  });
-
-  handle("sync:push", async () => {
-    const state = await git.pushNow("shrike: manual push");
-    return { git: state };
-  });
-
-  handle("sync:pull", async () => {
-    const state = await git.pullNow();
-    const [views, shortlist, legacy] = await Promise.all([
-      store.readViews(),
-      store.readShortlist(),
-      store.listLegacy(),
-    ]);
-    broadcast("data:changed", { views, shortlist });
-    return { git: state, views, shortlist, legacy };
-  });
-
-  handle("sync:set-remote", async (url) => {
-    const state = await git.setRemote(url);
-    return { git: state };
-  });
-
-  handle("legacy:list", () => store.listLegacy());
-
-  handle("legacy:archive", async (id) => {
-    await store.archiveLegacy(id);
-    return store.listLegacy();
-  });
-
-  handle("legacy:delete", async (id) => {
-    await store.deleteLegacy(id);
-    return store.listLegacy();
-  });
-
-  handle("legacy:archive-all", () => store.archiveAllLegacy());
-  handle("legacy:delete-all", () => store.deleteAllLegacy());
-
-  handle("export:csv", async ({ filters, sort } = {}) => {
+  handle("export:csv", async ({ source, filters, sort } = {}) => {
+    const chosen = ["hackerone", "bugcrowd", "yeswehack"].includes(source)
+      ? source
+      : "hackerone";
     const [cache, shortlist] = await Promise.all([
-      store.readBountyCache(),
+      store.readBountyCache(chosen),
       store.readShortlist(),
     ]);
     const rows = applyBountyView(
@@ -291,7 +370,7 @@ function registerIpc() {
 
     const result = await dialog.showSaveDialog(win, {
       title: "Export bounties",
-      defaultPath: "shrike-bounties.csv",
+      defaultPath: `shrike-${chosen}.csv`,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (result.canceled || !result.filePath) return null;
@@ -307,10 +386,11 @@ function createWindow() {
     height: 950,
     minWidth: 1120,
     minHeight: 720,
-    backgroundColor: "#0b0d0e",
+    backgroundColor: "#09090b",
     show: true,
     autoHideMenuBar: true,
     title: "Shrike",
+    icon: app.isPackaged ? undefined : path.join(ROOT, "build", "icon.png"),
     webPreferences: {
       preload: path.join(ROOT, "electron", "preload.cjs"),
       contextIsolation: true,
@@ -334,7 +414,7 @@ function createWindow() {
       win.loadURL(
         "data:text/html;charset=utf-8," +
           encodeURIComponent(
-            '<body style="background:#0b0d0e;color:#d8dee0;font:14px monospace;padding:40px">' +
+            '<body style="background:#09090b;color:#d8dee0;font:14px monospace;padding:40px">' +
               "Renderer build missing.<br><br>Run <b>npm run build</b> and start again.</body>",
           ),
       );
@@ -358,7 +438,6 @@ async function captureAndQuit() {
     }
     await delay(700);
 
-    // Screenshot-only hook: exercise a real update check from the packaged app.
     if (process.env.SHRIKE_CHECK_UPDATES) {
       await updater.check().catch(() => {});
       if (process.env.SHRIKE_DOWNLOAD_UPDATE) {
@@ -401,21 +480,6 @@ async function start() {
   await store.init();
 
   const settings = await store.readSettings();
-  const gitState = await store.readGitState();
-
-  let lastPersistedSync = gitState.lastSyncAt;
-  git = new GitSync({
-    repo: workspace,
-    autoPush: settings.sync.autoPush,
-    lastSyncAt: gitState.lastSyncAt,
-    onStatus: (state) => {
-      broadcast("sync:status", state);
-      if (state.lastSyncAt && state.lastSyncAt !== lastPersistedSync) {
-        lastPersistedSync = state.lastSyncAt;
-        store.writeGitState({ lastSyncAt: state.lastSyncAt }).catch(() => {});
-      }
-    },
-  });
 
   updater = new AppUpdater({
     autoCheck: settings.prefs.autoCheckUpdates,
@@ -424,7 +488,6 @@ async function start() {
   updater.init();
 
   registerIpc();
-  await git.init();
   createWindow();
   updater.scheduleAutoCheck();
 }
@@ -442,11 +505,6 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
-app.on("before-quit", (event) => {
-  if (quitting) return;
-  if (!git) return;
-  event.preventDefault();
+app.on("before-quit", () => {
   quitting = true;
-  const timeout = new Promise((resolve) => setTimeout(resolve, 4000));
-  Promise.race([git.flush().catch(() => {}), timeout]).finally(() => app.quit());
 });

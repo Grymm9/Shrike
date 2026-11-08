@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = path.join(ROOT, "build");
@@ -194,8 +195,37 @@ function encodeIco(png) {
   return Buffer.concat([header, entry, png]);
 }
 
+async function logoIcon() {
+  const logoPath = path.join(OUT_DIR, "logo.png");
+  try { await fs.access(logoPath); } catch { return false; }
+  const out = path.join(OUT_DIR, "icon.png");
+  const script = [
+    "Add-Type -AssemblyName System.Drawing",
+    `$src=[System.Drawing.Image]::FromFile('${logoPath.replace(/'/g, "''")}')`,
+    `$bmp=New-Object System.Drawing.Bitmap ${SIZE},${SIZE}`,
+    "$g=[System.Drawing.Graphics]::FromImage($bmp)",
+    "$g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic",
+    "$g.SmoothingMode=[System.Drawing.Drawing2D.SmoothingMode]::HighQuality",
+    "$g.PixelOffsetMode=[System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality",
+    `$g.DrawImage($src,0,0,${SIZE},${SIZE})`,
+    `$bmp.Save('${out.replace(/'/g, "''")}',[System.Drawing.Imaging.ImageFormat]::Png)`,
+    "$g.Dispose(); $bmp.Dispose(); $src.Dispose()",
+  ].join("; ");
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  const png = await fs.readFile(out);
+  await fs.writeFile(path.join(OUT_DIR, "icon.ico"), encodeIco(png));
+  await fs.mkdir(path.join(ROOT, "src", "assets"), { recursive: true });
+  await fs.copyFile(out, path.join(ROOT, "src", "assets", "logo.png"));
+  console.log(`Wrote ${path.join(OUT_DIR, "icon.ico")} from build/logo.png`);
+  return true;
+}
+
 async function main() {
   await fs.mkdir(OUT_DIR, { recursive: true });
+  if (await logoIcon()) return;
   const png = encodePng(render());
   await fs.writeFile(path.join(OUT_DIR, "icon.png"), png);
   await fs.writeFile(path.join(OUT_DIR, "icon.ico"), encodeIco(png));

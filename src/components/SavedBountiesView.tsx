@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
   Bounty,
-  BountyCache,
+  BountyCaches,
   Shortlist,
   ShortlistEntry,
   ShortlistStatus,
@@ -10,7 +10,7 @@ import { formatPayout, formatType, plural } from "../lib/format";
 import { IconExternal, IconPrograms, IconStar, IconTrash } from "./Icons";
 
 interface SavedBountiesViewProps {
-  cache: BountyCache;
+  caches: BountyCaches;
   shortlist: Shortlist;
   onOpen: (url: string) => void;
   onUpdateSaved: (
@@ -130,7 +130,7 @@ function SavedRow({
 }
 
 export function SavedBountiesView({
-  cache,
+  caches,
   shortlist,
   onOpen,
   onUpdateSaved,
@@ -140,7 +140,11 @@ export function SavedBountiesView({
   const entries = Object.values(shortlist.items).sort((a, b) =>
     a.savedAt < b.savedAt ? 1 : -1,
   );
-  const byId = new Map(cache.programs.map((bounty) => [bounty.id, bounty]));
+  const byId = new Map(
+    Object.values(caches)
+      .flatMap((cache) => cache.programs)
+      .map((bounty) => [bounty.id, bounty]),
+  );
 
   if (!entries.length) {
     return (
@@ -149,8 +153,7 @@ export function SavedBountiesView({
           <span className="micro-label">Shortlist</span>
           <h2>No saved bounties yet</h2>
           <p>
-            Star a bounty while browsing to keep it here. You can track a status and notes, and
-            those stay local until you push them with Git.
+            Star a bounty while browsing to keep it here. Track a status and notes; everything stays on this machine.
           </p>
           <div className="start-actions">
             <button type="button" className="btn primary" onClick={onBrowse}>

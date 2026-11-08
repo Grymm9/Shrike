@@ -6,7 +6,9 @@ import {
   bountiesToCsv,
   hackerOneRequest,
   normaliseBountyCache,
+  normaliseBugcrowd,
   normaliseHackerOne,
+  normaliseYesWeHack,
   validateSourceUrl,
 } from "../electron/lib/bounties.js";
 
@@ -232,5 +234,103 @@ describe("bountiesToCsv", () => {
     expect(csv).toContain("'=HYPERLINK(\"\"x\"\")");
     expect(csv).toContain("https://hackerone.com/acme");
     expect(csv.endsWith("\r\n")).toBe(true);
+  });
+});
+
+describe("normaliseBugcrowd", () => {
+  it("maps public engagements and parses reward strings", () => {
+    const result = normaliseBugcrowd({
+      paginationMeta: { limit: 24, totalCount: 296 },
+      engagements: [
+        {
+          name: "Bitso",
+          briefUrl: "/engagements/bitso-mbb-og",
+          tagline: "Latin America crypto",
+          rewardSummary: { minReward: "$100", maxReward: "$15,000" },
+          productEngagementType: { label: "Bug Bounty" },
+          accessStatus: "open",
+        },
+        {
+          name: "Acme VDP",
+          briefUrl: "/engagements/acme-vdp",
+          rewardSummary: {},
+          productEngagementType: { label: "VDP" },
+        },
+      ],
+    });
+
+    expect(result.total).toBe(296);
+    expect(result.programs).toHaveLength(2);
+    expect(result.programs[0]).toMatchObject({
+      id: "bugcrowd:bitso-mbb-og",
+      source: "bugcrowd",
+      platform: "Bugcrowd",
+      minBounty: 100,
+      maxBounty: 15000,
+      type: "bounty",
+    });
+    expect(result.programs[0].url).toBe(
+      "https://bugcrowd.com/engagements/bitso-mbb-og",
+    );
+    expect(result.programs[1]).toMatchObject({ type: "vdp" });
+  });
+});
+
+describe("normaliseYesWeHack", () => {
+  it("maps programs and pagination", () => {
+    const result = normaliseYesWeHack({
+      pagination: { page: 1, nb_pages: 2, nb_results: 53 },
+      items: [
+        {
+          title: "HARMAN",
+          slug: "harman",
+          vdp: false,
+          reports_count: 2796,
+          bounty_reward_min: 50,
+          bounty_reward_max: 2000,
+          business_unit: { currency: "USD" },
+          activity_area: "Manufacturing",
+          country: "US",
+        },
+        {
+          title: "Acme VDP",
+          slug: "acme-vdp",
+          vdp: true,
+          reports_count: 3,
+          bounty_reward_min: null,
+          bounty_reward_max: null,
+          business_unit: { currency: "EUR" },
+        },
+      ],
+    });
+
+    expect(result.total).toBe(53);
+    expect(result.pages).toBe(2);
+    expect(result.programs[0]).toMatchObject({
+      id: "yeswehack:harman",
+      source: "yeswehack",
+      platform: "YesWeHack",
+      minBounty: 50,
+      maxBounty: 2000,
+      reports: 2796,
+      type: "bounty",
+    });
+    expect(result.programs[0].url).toBe("https://yeswehack.com/programs/harman");
+    expect(result.programs[1]).toMatchObject({ type: "vdp", currency: "EUR" });
+  });
+});
+
+describe("normaliseBountyCache source", () => {
+  it("keeps non-HackerOne sources", () => {
+    const cache = normaliseBountyCache(
+      {
+        source: "bugcrowd",
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+        programs: [{ handle: "x", name: "X", type: "bounty", source: "bugcrowd" }],
+      },
+      "bugcrowd",
+    );
+    expect(cache.source).toBe("bugcrowd");
+    expect(cache.programs[0].platform).toBe("Bugcrowd");
   });
 });

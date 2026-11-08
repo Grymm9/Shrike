@@ -4,8 +4,9 @@ import { emptyFilters } from "../electron/lib/bountyFilters.js";
 import type {
   Bounty,
   BountyCache,
+  BountyCaches,
   BountyFilters,
-  GitState,
+  BountySource,
   LegacyEngagement,
   RefreshProgress,
   SavedView,
@@ -19,6 +20,7 @@ import type {
   View,
   WorkspacePaths,
 } from "./lib/types";
+import { BOUNTY_SOURCES } from "./lib/types";
 import { plural } from "./lib/format";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -34,20 +36,22 @@ const TITLES: Record<View, string> = {
   settings: "Settings",
 };
 
-const CRUMBS: Record<View, string> = {
-  bounties: "HackerOne directory",
-  saved: "Your shortlist",
-  settings: "System",
-};
-
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function emptyCache(): BountyCache {
+function emptyCaches(): BountyCaches {
+  return {
+    hackerone: emptyCache("hackerone"),
+    bugcrowd: emptyCache("bugcrowd"),
+    yeswehack: emptyCache("yeswehack"),
+  };
+}
+
+function emptyCache(source: BountySource): BountyCache {
   return {
     schemaVersion: 1,
-    source: "hackerone",
+    source,
     fetchedAt: null,
     scanned: 0,
     programs: [],
@@ -56,10 +60,11 @@ function emptyCache(): BountyCache {
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [bounties, setBounties] = useState<BountyCache>(emptyCache);
+  const [caches, setCaches] = useState<BountyCaches>(emptyCaches);
+  const [source, setSource] = useState<BountySource>("hackerone");
+  const bounties = caches[source];
   const [views, setViews] = useState<SavedViews>({ schemaVersion: 1, views: [] });
   const [shortlist, setShortlist] = useState<Shortlist>({ schemaVersion: 1, items: {} });
-  const [git, setGit] = useState<GitState | null>(null);
   const [paths, setPaths] = useState<WorkspacePaths | null>(null);
   const [legacy, setLegacy] = useState<LegacyEngagement[]>([]);
   const [version, setVersion] = useState("");
@@ -91,10 +96,10 @@ export default function App() {
       .then((boot) => {
         if (!alive) return;
         setSettings(boot.settings);
-        setBounties(boot.bounties);
+        setCaches(boot.bounties);
+        setSource("hackerone");
         setViews(boot.views);
         setShortlist(boot.shortlist);
-        setGit(boot.git);
         setPaths(boot.paths);
         setLegacy(boot.legacy);
         setVersion(boot.version);
@@ -127,7 +132,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const offSync = api.onSyncStatus((state) => setGit(state));
     const offProgress = api.onBountyProgress((next) => {
       if (next.phase === "done") {
         setProgress(null);
@@ -135,18 +139,9 @@ export default function App() {
       }
       setProgress(next);
     });
-    const offData = api.onDataChanged((payload) => {
-      setViews(payload.views);
-      setShortlist(payload.shortlist);
-      setActiveViewId((current) =>
-        current && payload.views.views.some((item) => item.id === current) ? current : null,
-      );
-    });
     const offUpdate = api.onUpdateStatus((state) => setUpdate(state));
     return () => {
-      offSync();
       offProgress();
-      offData();
       offUpdate();
     };
   }, []);
@@ -186,14 +181,21 @@ export default function App() {
     setActiveViewId(null);
   }
 
+  function changeSource(next: BountySource) {
+    if (next === source) return;
+    setSource(next);
+    setActiveViewId(null);
+  }
+
   async function refreshBounties() {
     if (busy) return;
     setBusy("refresh");
-    setProgress({ phase: "bounty", page: 1, loaded: 0, total: 0 });
+    setProgress({ phase: "programs", source, page: 1, loaded: 0, total: 0 });
     try {
-      const cache = await api.refreshBounties();
-      setBounties(cache);
-      toast("success", `Read ${plural(cache.scanned, "bounty", "bounties")} from HackerOne`);
+      const cache = await api.refreshBounties(source);
+      setCaches((current) => ({ ...current, [source]: cache }));
+      const label = BOUNTY_SOURCES.find((item) => item.id === source)?.label ?? "source";
+      toast("success", `Read ${plural(cache.scanned, "bounty", "bounties")} from ${label}`);
     } catch (error) {
       toast("error", messageOf(error));
     } finally {
@@ -204,9 +206,12 @@ export default function App() {
 
   async function exportCsv() {
     await run("export", async () => {
-      const result = await api.exportCsv({ filters, sort });
+      const result = await api.exportCsv({ source, filters, sort });
       if (!result) return null;
-      toast("success", `Exported ${plural(result.count, "bounty", "bounties")} to ${result.filePath}`);
+      toast(
+        "success",
+        `Exported ${plural(result.count, "bounty", "bounties")} to ${result.filePath}`,
+      );
       return result;
     });
   }
@@ -305,30 +310,6 @@ export default function App() {
     });
   }
 
-  async function setRemote(url: string) {
-    await run("remote", async () => {
-      const result = await api.setRemote(url);
-      setGit(result.git);
-      toast("success", "Remote saved — pushes will go here from now on.");
-      return result;
-    });
-  }
-
-  async function setAutoPush(enabled: boolean) {
-    await run("remote", async () => {
-      const result = await api.setAutoPush(enabled);
-      setSettings(result.settings);
-      setGit(result.git);
-      toast(
-        "info",
-        enabled
-          ? "Auto-push on — saved views and shortlist changes push shortly after you make them."
-          : "Auto-push off — use Push changes when you want to sync.",
-      );
-      return result;
-    });
-  }
-
   async function setPrefs(prefs: Partial<Settings["prefs"]>) {
     await run("prefs", async () => {
       const result = await api.setPrefs(prefs);
@@ -343,35 +324,6 @@ export default function App() {
           setActiveViewId(null);
         }
       }
-      return result;
-    });
-  }
-
-  async function push() {
-    await run("push", async () => {
-      const result = await api.pushNow();
-      setGit(result.git);
-      toast(result.git.phase === "error" ? "error" : "success", result.git.message);
-      return result;
-    });
-  }
-
-  async function pull() {
-    await run("pull", async () => {
-      const result = await api.pullNow();
-      setGit(result.git);
-      setViews(result.views);
-      setShortlist(result.shortlist);
-      setLegacy(result.legacy);
-      const current = result.views.views.find((item) => item.id === activeViewId);
-      if (current) {
-        setFiltersState(current.filters);
-        setSort(current.sort);
-        setActiveViewId(current.id);
-      } else {
-        setActiveViewId(null);
-      }
-      toast("success", result.git.message);
       return result;
     });
   }
@@ -412,14 +364,6 @@ export default function App() {
     });
   }
 
-  async function openExternal(url: string) {
-    await api.openExternal(url).catch((error) => toast("error", messageOf(error)));
-  }
-
-  async function openWorkspace() {
-    await api.openWorkspace().catch((error) => toast("error", messageOf(error)));
-  }
-
   async function checkUpdate() {
     await run("update", async () => {
       const state = await api.checkForUpdates();
@@ -448,6 +392,14 @@ export default function App() {
     }
   }
 
+  async function openExternal(url: string) {
+    await api.openExternal(url).catch((error) => toast("error", messageOf(error)));
+  }
+
+  async function openWorkspace() {
+    await api.openWorkspace().catch((error) => toast("error", messageOf(error)));
+  }
+
   function openReleases() {
     void openExternal("https://github.com/Grymm9/Shrike/releases");
   }
@@ -469,7 +421,7 @@ export default function App() {
     );
   }
 
-  if (!settings || !git || !update) {
+  if (!settings || !update) {
     return <AppSkeleton />;
   }
 
@@ -485,7 +437,6 @@ export default function App() {
         onChange={setView}
         bountyCount={bounties.scanned}
         savedCount={Object.keys(shortlist.items).length}
-        git={git}
         version={version}
         workspace={paths?.workspace ?? ""}
         onOpenWorkspace={() => void openWorkspace()}
@@ -494,8 +445,6 @@ export default function App() {
       <div className="main">
         <Topbar
           title={TITLES[view]}
-          crumb={CRUMBS[view]}
-          git={git}
           update={update}
           onOpenUpdates={() => setView("settings")}
         />
@@ -504,6 +453,8 @@ export default function App() {
           {view === "bounties" ? (
             <BountiesView
               cache={bounties}
+              source={source}
+              sources={BOUNTY_SOURCES}
               filters={filters}
               sort={sort}
               views={views}
@@ -512,6 +463,7 @@ export default function App() {
               busy={busy}
               progress={progress}
               stale={cacheStale}
+              onSourceChange={(next) => void changeSource(next)}
               onFilters={setFilters}
               onSort={(next) => {
                 setSort(next);
@@ -530,7 +482,7 @@ export default function App() {
 
           {view === "saved" ? (
             <SavedBountiesView
-              cache={bounties}
+              caches={caches}
               shortlist={shortlist}
               onOpen={(url) => void openExternal(url)}
               onUpdateSaved={(id, patch) => void updateSaved(id, patch)}
@@ -543,18 +495,13 @@ export default function App() {
             <SettingsPanel
               version={version}
               settings={settings}
-              git={git}
               paths={paths ?? { workspace: "", config: "" }}
               legacy={legacy}
               views={views}
               cache={bounties}
               update={update}
               busy={busy}
-              onSetAutoPush={(enabled) => void setAutoPush(enabled)}
               onSetPrefs={(prefs) => void setPrefs(prefs)}
-              onSetRemote={(url) => void setRemote(url)}
-              onPush={() => void push()}
-              onPull={() => void pull()}
               onRefreshBounties={() => void refreshBounties()}
               onOpenWorkspace={() => void openWorkspace()}
               onCheckUpdate={() => void checkUpdate()}

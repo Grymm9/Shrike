@@ -85,6 +85,8 @@ await store.init();
 
 // Make the demo reproducible: clear prior demo files before writing.
 await fs.rm(path.join(workspace, "sessions"), { recursive: true, force: true });
+await fs.rm(path.join(store.configDir, "bounties-bugcrowd.json"), { force: true });
+await fs.rm(path.join(store.configDir, "bounties-yeswehack.json"), { force: true });
 await fs.rm(path.join(workspace, "archive"), { recursive: true, force: true });
 await fs.mkdir(store.sessionsDir, { recursive: true });
 

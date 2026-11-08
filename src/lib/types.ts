@@ -1,3 +1,11 @@
+export type BountySource = "hackerone" | "bugcrowd" | "yeswehack";
+
+export const BOUNTY_SOURCES: Array<{ id: BountySource; label: string }> = [
+  { id: "hackerone", label: "HackerOne" },
+  { id: "bugcrowd", label: "Bugcrowd" },
+  { id: "yeswehack", label: "YesWeHack" },
+];
+
 export type BountyType = "bounty" | "vdp" | "external";
 
 export type SortKey =
@@ -10,7 +18,7 @@ export type SortKey =
 
 export interface Bounty {
   id: string;
-  source: "hackerone";
+  source: BountySource;
   handle: string;
   name: string;
   url: string;
@@ -68,35 +76,22 @@ export interface Shortlist {
 
 export interface BountyCache {
   schemaVersion: number;
-  source: "hackerone";
+  source: BountySource;
   fetchedAt: string | null;
   scanned: number;
   programs: Bounty[];
 }
 
+export type BountyCaches = Record<BountySource, BountyCache>;
+
 export interface Settings {
   schemaVersion: number;
-  sync: { autoPush: boolean };
   prefs: {
     cacheMinutes: number;
     defaultSort: SortKey;
     defaultViewId: string | null;
     autoCheckUpdates: boolean;
   };
-}
-
-export type GitPhase = "idle" | "working" | "error" | "offline" | "behind";
-
-export interface GitState {
-  phase: GitPhase;
-  action: "push" | "pull" | null;
-  message: string;
-  lastSyncAt: string | null;
-  remote: string | null;
-  branch: string;
-  autoPush: boolean;
-  repo: string;
-  hasRepo: boolean;
 }
 
 export interface WorkspacePaths {
@@ -134,10 +129,9 @@ export interface UpdateState {
 export interface Bootstrap {
   version: string;
   settings: Settings;
-  bounties: BountyCache;
+  bounties: BountyCaches;
   views: SavedViews;
   shortlist: Shortlist;
-  git: GitState;
   paths: WorkspacePaths;
   legacy: LegacyEngagement[];
   update: UpdateState;
@@ -153,7 +147,8 @@ export interface ToastItem {
 }
 
 export interface RefreshProgress {
-  phase: "bounty" | "vdp" | "done";
+  phase: "bounty" | "vdp" | "programs" | "done";
+  source: BountySource;
   page: number;
   loaded: number;
   total: number;

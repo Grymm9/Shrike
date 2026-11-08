@@ -107,8 +107,7 @@ function normaliseSettings(raw) {
   const defaultViewId =
     typeof raw?.prefs?.defaultViewId === "string" ? raw.prefs.defaultViewId : null;
   return {
-    schemaVersion: 2,
-    sync: { autoPush: raw?.sync?.autoPush !== false },
+    schemaVersion: 3,
     prefs: {
       cacheMinutes:
         Number.isFinite(cacheMinutes) && cacheMinutes >= 1 && cacheMinutes <= 1440
@@ -128,7 +127,6 @@ export class Store {
     this.configDir = path.join(workspace, "config");
     this.archiveDir = path.join(workspace, "archive", "engagements");
     this.settingsPath = path.join(this.configDir, "settings.json");
-    this.gitStatePath = path.join(this.configDir, "git-state.json");
     this.bountiesPath = path.join(this.configDir, "bounties.json");
     this.viewsPath = path.join(this.configDir, "views.json");
     this.shortlistPath = path.join(this.configDir, "shortlist.json");
@@ -181,41 +179,35 @@ export class Store {
     });
   }
 
-  async setAutoPush(enabled) {
-    const current = await this.readSettings();
-    return this.writeSettings({ ...current, sync: { autoPush: Boolean(enabled) } });
-  }
-
   async setPrefs(prefs) {
     const current = await this.readSettings();
     return this.writeSettings({ ...current, prefs: { ...current.prefs, ...prefs } });
   }
 
-  async readGitState() {
-    try {
-      const raw = await readJson(this.gitStatePath);
-      return { lastSyncAt: typeof raw?.lastSyncAt === "string" ? raw.lastSyncAt : null };
-    } catch {
-      return { lastSyncAt: null };
-    }
+  bountyPath(source) {
+    return source === "hackerone"
+      ? this.bountiesPath
+      : path.join(this.configDir, `bounties-${source}.json`);
   }
 
-  async writeGitState(state) {
-    await atomicWrite(this.gitStatePath, JSON.stringify(state, null, 2) + "\n");
-  }
-
-  async readBountyCache() {
+  async readBountyCache(source = "hackerone") {
     try {
-      return normaliseBountyCache(await readJson(this.bountiesPath));
+      return normaliseBountyCache(
+        await readJson(this.bountyPath(source)),
+        source,
+      );
     } catch {
-      return emptyBountyCache();
+      return emptyBountyCache(source);
     }
   }
 
   async writeBountyCache(cache) {
     return this.enqueue(async () => {
-      const clean = normaliseBountyCache(cache);
-      await atomicWrite(this.bountiesPath, JSON.stringify(clean, null, 2) + "\n");
+      const clean = normaliseBountyCache(cache, cache?.source);
+      await atomicWrite(
+        this.bountyPath(clean.source),
+        JSON.stringify(clean, null, 2) + "\n",
+      );
       return clean;
     });
   }

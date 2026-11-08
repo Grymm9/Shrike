@@ -1,4 +1,4 @@
-import { IconMark } from "./Icons";
+import logoUrl from "../assets/logo.png";
 
 interface BarProps {
   width: number | string;
@@ -50,12 +50,11 @@ export function AppSkeleton() {
     >
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">
-            <IconMark size={17} />
+          <span className="brand-mark brand-logo">
+            <img src={logoUrl} alt="" />
           </span>
           <span className="brand-text">
             <span className="brand-name">SHRIKE</span>
-            <span className="brand-sub">Bounty discovery</span>
           </span>
         </div>
 
@@ -70,8 +69,11 @@ export function AppSkeleton() {
 
         <div className="sidebar-spacer" />
 
-        <div className="sk-sync">
-          <Bar width={64} />
+        <div className="local-card">
+          <div className="local-card-head">
+            <span className="pulse-dot" />
+            <Bar width={64} />
+          </div>
           <Bar width="100%" height={8} />
           <Bar width="84%" height={8} />
           <Bar width="100%" height={26} />
@@ -85,8 +87,6 @@ export function AppSkeleton() {
           </div>
           <div className="topbar-right">
             <Bar width={96} height={24} />
-            <Bar width={132} height={30} />
-            <Bar width={124} height={30} />
           </div>
         </header>
 

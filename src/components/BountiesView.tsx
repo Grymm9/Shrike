@@ -3,6 +3,7 @@ import type {
   Bounty,
   BountyCache,
   BountyFilters,
+  BountySource,
   RefreshProgress,
   SavedView,
   SavedViews,
@@ -29,7 +30,6 @@ import {
   IconDownload,
   IconExternal,
   IconFilter,
-  IconPrograms,
   IconSearch,
   IconStar,
   IconSync,
@@ -39,6 +39,8 @@ import { BountyDetail } from "./BountyDetail";
 
 interface BountiesViewProps {
   cache: BountyCache;
+  source: BountySource;
+  sources: Array<{ id: BountySource; label: string }>;
   filters: BountyFilters;
   sort: SortKey;
   views: SavedViews;
@@ -47,6 +49,7 @@ interface BountiesViewProps {
   busy: string | null;
   progress: RefreshProgress | null;
   stale: boolean;
+  onSourceChange: (source: BountySource) => void;
   onFilters: (filters: BountyFilters) => void;
   onSort: (sort: SortKey) => void;
   onApplyView: (view: SavedView | null) => void;
@@ -62,40 +65,21 @@ interface BountiesViewProps {
   ) => void;
 }
 
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string | number;
-  tone?: "muted" | "warn";
-}) {
-  return (
-    <div className="stat">
-      <span className="micro-label">{label}</span>
-      <span className={"stat-value" + (tone ? ` tone-${tone}` : "")}>{value}</span>
-    </div>
-  );
+function responseClass(value: number | null): string {
+  if (value == null) return "resp-none";
+  if (value >= 90) return "resp-high";
+  if (value >= 50) return "resp-mid";
+  return "resp-low";
 }
 
-function clearFilter(filters: BountyFilters, key: string): BountyFilters {
-  const next = { ...filters, types: [...filters.types] };
-  if (key === "query") next.query = "";
-  else if (key === "minBounty") next.minBounty = null;
-  else if (key === "maxBounty") next.maxBounty = null;
-  else if (key === "types") next.types = [];
-  else if (key === "minReports") next.minReports = null;
-  else if (key === "minResponseEfficiency") next.minResponseEfficiency = null;
-  else if (key === "launchedAfter") next.launchedAfter = null;
-  else if (key === "includeKeywords") next.includeKeywords = "";
-  else if (key === "excludeKeywords") next.excludeKeywords = "";
-  else if (key === "shortlistedOnly") next.shortlistedOnly = false;
-  return next;
+function isHighPayout(bounty: Bounty): boolean {
+  return (bounty.maxBounty ?? bounty.minBounty ?? 0) >= 100_000;
 }
 
 export function BountiesView({
   cache,
+  source,
+  sources,
   filters,
   sort,
   views,
@@ -104,6 +88,7 @@ export function BountiesView({
   busy,
   progress,
   stale,
+  onSourceChange,
   onFilters,
   onSort,
   onApplyView,
@@ -127,64 +112,48 @@ export function BountiesView({
   const filterCount = activeFilterCount(filters);
   const labels = filterLabels(filters);
   const refreshing = busy === "refresh";
+  const sourceLabel = sources.find((item) => item.id === source)?.label ?? "Source";
   const selected = selectedId
     ? (cache.programs.find((bounty) => bounty.id === selectedId) ?? null)
     : null;
 
-  const topPayout = rows.reduce(
-    (max, bounty) => Math.max(max, bounty.maxBounty ?? bounty.minBounty ?? 0),
-    0,
+  const topBounty = rows.reduce<Bounty | null>((best, bounty) => {
+    const value = bounty.maxBounty ?? bounty.minBounty ?? 0;
+    const bestValue = best ? (best.maxBounty ?? best.minBounty ?? 0) : -1;
+    return value > bestValue ? bounty : best;
+  }, null);
+  const topPayout = topBounty ? (topBounty.maxBounty ?? topBounty.minBounty ?? 0) : 0;
+  const topCurrency = topBounty?.currency ?? "USD";
+  const hasReports = cache.programs.some((bounty) => bounty.reports != null);
+  const hasResponse = cache.programs.some(
+    (bounty) => bounty.responseEfficiency != null,
   );
+  const hasStarted = cache.programs.some((bounty) => Boolean(bounty.launchedAt));
 
   if (!cache.programs.length) {
     return (
-      <div className="bounties">
-        <div className="start">
-          <div className="start-copy">
-            <span className="micro-label">HackerOne directory</span>
-            <h2>Read the bounty board once</h2>
-            <p>
-              Shrike loads every public bounty and VDP on HackerOne, then lets you filter them
-              locally by payout, type, reports, response efficiency and launch date. The list is
-              cached, so the next launch is instant.
-            </p>
-            <div className="start-actions">
-              <button
-                type="button"
-                className="btn primary"
-                onClick={onRefresh}
-                disabled={refreshing}
-              >
-                <span className={refreshing ? "spin" : undefined}>
-                  <IconSync />
-                </span>
-                {refreshing ? "Reading HackerOne…" : "Read HackerOne directory"}
-              </button>
-            </div>
-            <p className="start-note">
-              About 18 requests, one page at a time. Cached in{" "}
-              <code>config/bounties.json</code>; refresh whenever you want.
-            </p>
-          </div>
-
-          <div className="format-card">
-            <span className="micro-label">What gets loaded</span>
-            <pre>{`Paying bounty programs
-Vulnerability disclosure programs
-External programs
-Payout ranges · reports · response rate`}</pre>
-            <p>
-              HackerOne remains the source. Shrike only reads its public directory; it never
-              contacts the companies themselves.
-            </p>
-          </div>
+      <div className="bounties bounties-empty">
+        <div className="empty-board">
+          <span className="micro-label">{sourceLabel}</span>
+          <h2>Read the {sourceLabel} board</h2>
+          <p>Load public programs once, then filter locally. Cached between launches.</p>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onRefresh}
+            disabled={refreshing}
+          >
+            <span className={refreshing ? "spin" : undefined}>
+              <IconSync />
+            </span>
+            {refreshing ? "Reading…" : `Read ${sourceLabel}`}
+          </button>
         </div>
 
         {progress ? (
           <div className="progress progress-empty">
             <span className="micro-label">
-              {progress.phase === "vdp" ? "Reading VDPs" : "Reading bounties"} ·{" "}
-              {progress.total ? `${progress.loaded} of ${progress.total}` : "starting…"}
+              {progress.loaded} of {progress.total || "…"}
             </span>
             <span className="progress-track">
               <i
@@ -204,10 +173,24 @@ Payout ranges · reports · response rate`}</pre>
   return (
     <div className="bounties">
       <div className="stats">
-        <Stat label="Scanned" value={cache.scanned} />
-        <Stat label="Showing" value={rows.length} />
-        <Stat label="Top payout" value={topPayout ? formatMoney(topPayout, "USD") : "—"} tone="warn" />
-        <Stat label="Updated" value={formatRelative(cache.fetchedAt)} tone="muted" />
+        <div className="stat">
+          <span className="micro-label">Scanned</span>
+          <span className="stat-value">{cache.scanned}</span>
+        </div>
+        <div className="stat">
+          <span className="micro-label">Showing</span>
+          <span className="stat-value">{rows.length}</span>
+        </div>
+        <div className="stat">
+          <span className="micro-label">Top payout</span>
+          <span className="stat-value tone-high">
+            {topPayout ? formatMoney(topPayout, topCurrency) : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="micro-label">Updated</span>
+          <span className="stat-value tone-muted">{formatRelative(cache.fetchedAt)}</span>
+        </div>
       </div>
 
       <div className="toolbar">
@@ -216,24 +199,30 @@ Payout ranges · reports · response rate`}</pre>
           <input
             value={filters.query}
             onChange={(event) => onFilters({ ...filters, query: event.target.value })}
-            placeholder="Search name, handle or tag"
+            placeholder="Search bounties"
             spellCheck={false}
             aria-label="Search bounties"
           />
         </div>
 
-        <button
-          type="button"
-          className={"btn" + (filterCount ? " primary" : " ghost")}
-          onClick={() => setShowFilters(true)}
-          title="Open bounty filters"
-        >
-          <IconFilter />
-          Filters
-          {filterCount ? <span className="filter-count">{filterCount}</span> : null}
-        </button>
-
         <div className="toolbar-right">
+          <label className="inline-field">
+            <span className="micro-label">Source</span>
+            <select
+              className="select-input source-select"
+              value={source}
+              onChange={(event) => onSourceChange(event.target.value as BountySource)}
+              disabled={Boolean(busy)}
+              aria-label="Bounty source"
+            >
+              {sources.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className="inline-field">
             <span className="micro-label">View</span>
             <select
@@ -245,7 +234,7 @@ Payout ranges · reports · response rate`}</pre>
               }}
               aria-label="Saved view"
             >
-              <option value="">Custom filters</option>
+              <option value="">Custom</option>
               {views.views.map((view) => (
                 <option key={view.id} value={view.id}>
                   {view.name}
@@ -271,29 +260,25 @@ Payout ranges · reports · response rate`}</pre>
             </select>
           </label>
 
+          <button type="button" className="btn action-btn" onClick={() => setShowFilters(true)}>
+            <IconFilter />
+            Filters
+            {filterCount ? <span className="filter-count">{filterCount}</span> : null}
+          </button>
           <button
             type="button"
-            className="btn ghost"
+            className="btn action-btn"
             onClick={onExport}
             disabled={Boolean(busy) || !rows.length}
-            title="Export the current view as CSV"
           >
             <IconDownload />
             CSV
           </button>
-
-          {stale ? (
-            <span className="pill pill-warn" title="The cached directory is older than your cache-age setting">
-              Stale
-            </span>
-          ) : null}
-
           <button
             type="button"
-            className="btn"
+            className="btn action-btn"
             onClick={onRefresh}
             disabled={Boolean(busy)}
-            title="Read the HackerOne directory again"
           >
             <span className={refreshing ? "spin" : undefined}>
               <IconSync />
@@ -306,8 +291,7 @@ Payout ranges · reports · response rate`}</pre>
       {progress ? (
         <div className="progress">
           <span className="micro-label">
-            {progress.phase === "vdp" ? "Reading VDPs" : "Reading bounties"} ·{" "}
-            {progress.total ? `${progress.loaded} of ${progress.total}` : "starting…"}
+            {progress.loaded} of {progress.total || "…"}
           </span>
           <span className="progress-track">
             <i
@@ -328,18 +312,28 @@ Payout ranges · reports · response rate`}</pre>
               key={label.key}
               type="button"
               className="filter-chip"
-              onClick={() => onFilters(clearFilter(filters, label.key))}
+              onClick={() => {
+                const next = { ...filters, types: [...filters.types] };
+                if (label.key === "query") next.query = "";
+                else if (label.key === "minBounty") next.minBounty = null;
+                else if (label.key === "maxBounty") next.maxBounty = null;
+                else if (label.key === "types") next.types = [];
+                else if (label.key === "minReports") next.minReports = null;
+                else if (label.key === "minResponseEfficiency")
+                  next.minResponseEfficiency = null;
+                else if (label.key === "launchedAfter") next.launchedAfter = null;
+                else if (label.key === "includeKeywords") next.includeKeywords = "";
+                else if (label.key === "excludeKeywords") next.excludeKeywords = "";
+                else if (label.key === "shortlistedOnly") next.shortlistedOnly = false;
+                onFilters(next);
+              }}
               title="Remove this filter"
             >
               {label.text}
               <span aria-hidden="true">×</span>
             </button>
           ))}
-          <button
-            type="button"
-            className="filter-clear"
-            onClick={() => onFilters(emptyFilters())}
-          >
+          <button type="button" className="filter-clear" onClick={() => onFilters(emptyFilters())}>
             Clear all
           </button>
         </div>
@@ -354,9 +348,9 @@ Payout ranges · reports · response rate`}</pre>
                 <th>Bounty</th>
                 <th className="col-payout">Payout</th>
                 <th className="col-type">Type</th>
-                <th className="col-reports">Reports</th>
-                <th className="col-response">Response</th>
-                <th className="col-started">Started</th>
+                {hasReports ? <th className="col-reports">Reports</th> : null}
+                {hasResponse ? <th className="col-response">Response</th> : null}
+                {hasStarted ? <th className="col-started">Started</th> : null}
                 <th className="col-open" aria-label="Open" />
               </tr>
             </thead>
@@ -385,10 +379,12 @@ Payout ranges · reports · response rate`}</pre>
                       </button>
                     </td>
                     <td className="col-bounty">
-                      <span className="bounty-name">{bounty.name}</span>
-                      <span className="bounty-handle mono">@{bounty.handle}</span>
+                      <span className="bounty-cell">
+                        <span className="bounty-name">{bounty.name}</span>
+                        <span className="bounty-handle mono">@{bounty.handle}</span>
+                      </span>
                     </td>
-                    <td className="col-payout mono">
+                    <td className={"col-payout mono" + (isHighPayout(bounty) ? " payout-high" : "")}>
                       {formatPayout(bounty.minBounty, bounty.maxBounty, bounty.currency)}
                     </td>
                     <td className="col-type">
@@ -396,13 +392,23 @@ Payout ranges · reports · response rate`}</pre>
                         {formatType(bounty.type)}
                       </span>
                     </td>
-                    <td className="col-reports mono dim">
-                      {bounty.reports != null ? bounty.reports.toLocaleString() : "—"}
-                    </td>
-                    <td className="col-response mono">
-                      {formatResponse(bounty.responseEfficiency)}
-                    </td>
-                    <td className="col-started mono dim">{formatLaunched(bounty.launchedAt)}</td>
+                    {hasReports ? (
+                      <td className="col-reports mono">
+                        {bounty.reports != null ? bounty.reports.toLocaleString() : "—"}
+                      </td>
+                    ) : null}
+                    {hasResponse ? (
+                      <td
+                        className={
+                          "col-response mono " + responseClass(bounty.responseEfficiency)
+                        }
+                      >
+                        {formatResponse(bounty.responseEfficiency)}
+                      </td>
+                    ) : null}
+                    {hasStarted ? (
+                      <td className="col-started mono">{formatLaunched(bounty.launchedAt)}</td>
+                    ) : null}
                     <td className="col-open">
                       <button
                         type="button"
@@ -411,7 +417,7 @@ Payout ranges · reports · response rate`}</pre>
                           event.stopPropagation();
                           onOpen(bounty.url);
                         }}
-                        aria-label={`Open ${bounty.name} on HackerOne`}
+                        aria-label={`Open ${bounty.name} on ${bounty.platform}`}
                       >
                         <IconExternal size={14} />
                       </button>
@@ -426,27 +432,10 @@ Payout ranges · reports · response rate`}</pre>
             <div className="empty-inline">
               <span className="micro-label">No matches</span>
               <p className="empty-title">No bounties fit these filters.</p>
-              <p>
-                {filterCount
-                  ? "Relax a filter or clear the search to see the rest of the directory."
-                  : "The directory has not loaded any bounties yet."}
-              </p>
-              <div className="start-actions">
-                {filterCount ? (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => onFilters(emptyFilters())}
-                  >
-                    Clear all filters
-                  </button>
-                ) : (
-                  <button type="button" className="btn primary" onClick={onRefresh}>
-                    <IconPrograms />
-                    Read HackerOne directory
-                  </button>
-                )}
-              </div>
+              <p>Clear a filter or lower the payout floor to see more.</p>
+              <button type="button" className="btn ghost" onClick={() => onFilters(emptyFilters())}>
+                Clear all filters
+              </button>
             </div>
           ) : null}
         </div>
@@ -469,7 +458,8 @@ Payout ranges · reports · response rate`}</pre>
           {filterCount ? ` · ${plural(filterCount, "filter")} active` : ""}
         </span>
         <span className="dim">
-          {cache.fetchedAt ? `Last read ${formatRelative(cache.fetchedAt)}` : "Never read"}
+          {stale ? "Stale cache · " : ""}
+          {cache.fetchedAt ? `read ${formatRelative(cache.fetchedAt)}` : "never read"}
         </span>
       </div>
 

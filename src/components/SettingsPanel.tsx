@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   BountyCache,
-  GitState,
   LegacyEngagement,
   SavedViews,
   Settings,
@@ -9,7 +8,7 @@ import type {
   UpdateState,
   WorkspacePaths,
 } from "../lib/types";
-import { formatRelative, formatStamp, plural, remoteHost } from "../lib/format";
+import { formatRelative, formatStamp, plural } from "../lib/format";
 import {
   IconArchive,
   IconDownload,
@@ -23,18 +22,13 @@ import {
 interface SettingsPanelProps {
   version: string;
   settings: Settings;
-  git: GitState;
   paths: WorkspacePaths;
   legacy: LegacyEngagement[];
   views: SavedViews;
   cache: BountyCache;
   update: UpdateState;
   busy: string | null;
-  onSetAutoPush: (enabled: boolean) => void;
   onSetPrefs: (prefs: Partial<Settings["prefs"]>) => void;
-  onSetRemote: (url: string) => void;
-  onPush: () => void;
-  onPull: () => void;
   onRefreshBounties: () => void;
   onOpenWorkspace: () => void;
   onCheckUpdate: () => void;
@@ -50,18 +44,13 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   version,
   settings,
-  git,
   paths,
   legacy,
   views,
   cache,
   update,
   busy,
-  onSetAutoPush,
   onSetPrefs,
-  onSetRemote,
-  onPush,
-  onPull,
   onRefreshBounties,
   onOpenWorkspace,
   onCheckUpdate,
@@ -73,41 +62,28 @@ export function SettingsPanel({
   onArchiveAllLegacy,
   onDeleteAllLegacy,
 }: SettingsPanelProps) {
-  const [remote, setRemote] = useState(git.remote ?? "");
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
 
-  useEffect(() => {
-    setRemote(git.remote ?? "");
-  }, [git.remote]);
-
   const disabled = Boolean(busy);
-  const syncing = git.phase === "working";
 
   return (
     <div className="settings">
       <div className="settings-scroll">
-        <header className="settings-head">
-          <span className="micro-label">System</span>
-          <h2>Settings</h2>
-          <p>
-            Install app updates, sync saved views and shortlist notes, tune the cache, and
-            clear out the old engagement files from v1.
-          </p>
-        </header>
-
         <section className="card settings-card update-card">
           <div className="card-head">
             <div>
               <h3>App updates</h3>
               <p>
-                Installed build · v{version}. Updates replace the app files only; saved views,
-                notes and the bounty cache stay in your local workspace.
+                Installed build · v{version}. Updates replace app files only; saved data stays
+                local.
               </p>
             </div>
             <span
               className={`pill ${
-                update.status === "available" || update.status === "downloaded" || update.status === "error"
+                update.status === "available" ||
+                update.status === "downloaded" ||
+                update.status === "error"
                   ? "pill-warn"
                   : update.status === "current"
                     ? "pill-active"
@@ -134,7 +110,8 @@ export function SettingsPanel({
             <div className="update-status">
               <span className="micro-label">Status</span>
               <p>{update.message}</p>
-              {update.notes && (update.status === "available" || update.status === "downloaded") ? (
+              {update.notes &&
+              (update.status === "available" || update.status === "downloaded") ? (
                 <pre className="release-notes">{update.notes}</pre>
               ) : null}
               {update.status === "downloading" ? (
@@ -190,109 +167,11 @@ export function SettingsPanel({
               />
               <span>
                 <strong>Check on launch</strong>
-                <em>Notifies you when a release exists; it never installs without asking.</em>
+                <em>Notifies you; never installs without asking.</em>
               </span>
             </label>
             <span className="dim">Pre-install backup saved in config/backups.</span>
           </div>
-        </section>
-
-        <section className="card settings-card">
-          <div className="card-head">
-            <div>
-              <h3>Git sync</h3>
-              <p>
-                Push saved views and shortlist notes to your own remote so another machine or
-                person can pull them. Bounty cache and credentials stay local.
-              </p>
-            </div>
-            <span
-              className={`pill ${
-                !git.remote ? "" : git.phase === "error" ? "pill-warn" : "pill-active"
-              }`}
-            >
-              {syncing ? "Syncing" : remoteHost(git.remote)}
-            </span>
-          </div>
-
-          <div className="sync-grid">
-            <label className="field grow">
-              <span className="micro-label">Remote</span>
-              <input
-                className="input"
-                value={remote}
-                onChange={(event) => setRemote(event.target.value)}
-                placeholder="git@github.com:you/shrike-bounties.git"
-                spellCheck={false}
-                disabled={disabled}
-              />
-            </label>
-            <label className="field">
-              <span className="micro-label">Auto-push</span>
-              <button
-                type="button"
-                className={"switch" + (settings.sync.autoPush ? " on" : "")}
-                onClick={() => onSetAutoPush(!settings.sync.autoPush)}
-                disabled={disabled}
-                aria-pressed={settings.sync.autoPush}
-              >
-                <span />
-                <em>{settings.sync.autoPush ? "ON" : "OFF"}</em>
-              </button>
-            </label>
-            <label className="field">
-              <span className="micro-label">Branch</span>
-              <span className="mono sync-line-value">{git.branch}</span>
-            </label>
-          </div>
-
-          <div className="sync-actions">
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onSetRemote(remote.trim())}
-              disabled={disabled || !remote.trim() || remote.trim() === (git.remote ?? "")}
-            >
-              Save remote
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onPull}
-              disabled={disabled || !git.remote}
-              title={git.remote ? "Fetch saved views and shortlist notes" : "Add a remote first"}
-            >
-              <IconSync />
-              Fetch latest
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onPush}
-              disabled={disabled || !git.remote}
-              title={git.remote ? "Push saved views and shortlist notes now" : "Add a remote first"}
-            >
-              Push changes
-            </button>
-            <span className="dim sync-note" title={git.message}>
-              {git.message}
-            </span>
-          </div>
-
-          <dl className="settings-facts">
-            <div>
-              <dt>Remote</dt>
-              <dd>{remoteHost(git.remote)}</dd>
-            </div>
-            <div>
-              <dt>Last sync</dt>
-              <dd>{formatRelative(git.lastSyncAt)}</dd>
-            </div>
-            <div>
-              <dt>Files</dt>
-              <dd className="mono">views.json · shortlist.json</dd>
-            </div>
-          </dl>
         </section>
 
         <div className="settings-grid">
@@ -300,7 +179,6 @@ export function SettingsPanel({
             <div className="card-head">
               <div>
                 <h3>Preferences</h3>
-                <p>Defaults for the bounty board.</p>
               </div>
               <IconSettings size={16} className="card-icon" />
             </div>
@@ -362,9 +240,6 @@ export function SettingsPanel({
                 </select>
               </label>
             </div>
-            <p className="filter-help">
-              Cache age drives the “stale” hint; refresh is always manual.
-            </p>
           </section>
 
           <section className="card settings-card">
@@ -385,11 +260,7 @@ export function SettingsPanel({
               </div>
               <div>
                 <dt>Cache</dt>
-                <dd>
-                  {cache.fetchedAt
-                    ? `Read ${formatRelative(cache.fetchedAt)}`
-                    : "Never read"}
-                </dd>
+                <dd>{cache.fetchedAt ? `Read ${formatRelative(cache.fetchedAt)}` : "Never read"}</dd>
               </div>
               <div>
                 <dt>Stamp</dt>
@@ -420,8 +291,8 @@ export function SettingsPanel({
             <div>
               <h3>Old engagement files</h3>
               <p>
-                v1 stored endpoint lists in <code>sessions/</code>. They are no longer used.
-                Archive moves a file to <code>archive/engagements/</code>; delete removes it.
+                v1 endpoint lists in <code>sessions/</code>. Archive moves them to{" "}
+                <code>archive/engagements/</code>; delete removes them.
               </p>
             </div>
             <span className="count-pill">{legacy.length}</span>
@@ -517,13 +388,13 @@ export function SettingsPanel({
             <span className="micro-label">About</span>
             <h3>Shrike {version}</h3>
             <p>
-              A local bounty board for HackerOne. Filter the public directory by your own
-              criteria, save the programs worth your time, and sync those choices with Git.
+              A local bounty board. Filter public programs, save what matters, and update the
+              app from GitHub Releases.
             </p>
           </div>
           <div className="about-meta">
             <span className="pill pill-active">No target traffic</span>
-            <span className="pill">HackerOne only</span>
+            <span className="pill">Local data</span>
           </div>
         </section>
       </div>

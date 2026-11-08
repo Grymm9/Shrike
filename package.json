@@ -1,6 +1,6 @@
 {
   "name": "shrike",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "private": true,
   "description": "Local-first bounty discovery for HackerOne: filter programs, save a shortlist, sync with Git.",
   "repository": "https://github.com/Grymm9/Shrike",

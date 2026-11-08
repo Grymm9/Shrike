@@ -28,9 +28,13 @@ describe("Store", () => {
     const store = await workspace();
     const settings = await store.readSettings();
     expect(settings).toMatchObject({
-      schemaVersion: 2,
-      sync: { autoPush: true },
-      prefs: { cacheMinutes: 15, defaultSort: "maxBounty", defaultViewId: null },
+      schemaVersion: 3,
+      prefs: {
+        cacheMinutes: 15,
+        defaultSort: "maxBounty",
+        defaultViewId: null,
+        autoCheckUpdates: true,
+      },
     });
 
     const views = await store.readViews();
@@ -47,11 +51,9 @@ describe("Store", () => {
     await fs.access(path.join(store.configDir, "shortlist.json"));
   });
 
-  it("persists preferences without losing sync settings", async () => {
+  it("persists preferences", async () => {
     const store = await workspace();
-    await store.setAutoPush(false);
     const updated = await store.setPrefs({ defaultSort: "name", defaultViewId: "vdp" });
-    expect(updated.sync.autoPush).toBe(false);
     expect(updated.prefs.defaultSort).toBe("name");
     expect(updated.prefs.defaultViewId).toBe("vdp");
 

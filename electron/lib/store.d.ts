@@ -1,5 +1,6 @@
 import type {
   BountyCache,
+  BountySource,
   LegacyEngagement,
   SavedViews,
   Settings,
@@ -14,7 +15,6 @@ export class Store {
   configDir: string;
   archiveDir: string;
   settingsPath: string;
-  gitStatePath: string;
   bountiesPath: string;
   viewsPath: string;
   shortlistPath: string;
@@ -24,13 +24,10 @@ export class Store {
 
   readSettings(): Promise<Settings>;
   writeSettings(settings: Settings): Promise<Settings>;
-  setAutoPush(enabled: boolean): Promise<Settings>;
   setPrefs(prefs: Partial<Settings["prefs"]>): Promise<Settings>;
 
-  readGitState(): Promise<{ lastSyncAt: string | null }>;
-  writeGitState(state: { lastSyncAt: string | null }): Promise<void>;
-
-  readBountyCache(): Promise<BountyCache>;
+  bountyPath(source: BountySource): string;
+  readBountyCache(source?: BountySource): Promise<BountyCache>;
   writeBountyCache(cache: BountyCache): Promise<BountyCache>;
 
   readViews(): Promise<SavedViews>;

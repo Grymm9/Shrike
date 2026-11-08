@@ -11,6 +11,14 @@ export const HACKERONE_GRAPHQL_URL = "https://hackerone.com/graphql";
 export const PAGE_SIZE = 25;
 export const MAX_PAGES = 60;
 
+export const SOURCE_LABELS = {
+  hackerone: "HackerOne",
+  bugcrowd: "Bugcrowd",
+  yeswehack: "YesWeHack",
+};
+
+const VALID_SOURCES = new Set(Object.keys(SOURCE_LABELS));
+
 const DIRECTORY_QUERY = `query ShrikeBounties($cursor: String, $secureOrderBy: FiltersTeamFilterOrder, $where: FiltersTeamFilterInput) {
   teams(first: 25, after: $cursor, secure_order_by: $secureOrderBy, where: $where) {
     total_count
@@ -44,6 +52,14 @@ const PRIVATE_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa"];
 function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseMoney(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const digits = String(value ?? "").replace(/[^0-9.]/g, "");
+  if (!digits) return null;
+  const n = Number(digits);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -232,20 +248,104 @@ export function normaliseHackerOne(payload) {
   };
 }
 
-function normaliseBounty(value) {
+export function normaliseBugcrowd(payload) {
+  const items = Array.isArray(payload?.engagements) ? payload.engagements : [];
+  const programs = [];
+
+  for (const item of items) {
+    const href = String(item?.briefUrl ?? "");
+    const handle = href.split("/").filter(Boolean).pop() ?? "";
+    const name = collapse(item?.name);
+    if (!handle || !name) continue;
+
+    const min = parseMoney(item?.rewardSummary?.minReward);
+    const max = parseMoney(item?.rewardSummary?.maxReward);
+    const label = String(item?.productEngagementType?.label ?? "Bug Bounty");
+    const type = /vdp|disclosure/i.test(label) ? "vdp" : "bounty";
+
+    programs.push({
+      id: `bugcrowd:${handle}`,
+      source: "bugcrowd",
+      handle,
+      name,
+      url: `https://bugcrowd.com${href}`,
+      platform: "Bugcrowd",
+      description: typeof item?.tagline === "string" ? item.tagline : null,
+      currency: "USD",
+      minBounty: min ?? max,
+      maxBounty: max ?? min,
+      averageBounty: null,
+      reports: null,
+      responseEfficiency: null,
+      launchedAt: null,
+      type,
+      tags: [label],
+    });
+  }
+
+  return {
+    programs,
+    total: Number(payload?.paginationMeta?.totalCount) || programs.length,
+  };
+}
+
+export function normaliseYesWeHack(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const programs = [];
+
+  for (const item of items) {
+    const handle = String(item?.slug ?? "");
+    const name = collapse(item?.title);
+    if (!handle || !name) continue;
+    if (item?.disabled || item?.archived) continue;
+
+    const min = parseMoney(item?.bounty_reward_min);
+    const max = parseMoney(item?.bounty_reward_max);
+    const type = item?.vdp ? "vdp" : "bounty";
+
+    programs.push({
+      id: `yeswehack:${handle}`,
+      source: "yeswehack",
+      handle,
+      name,
+      url: `https://yeswehack.com/programs/${encodeURIComponent(handle)}`,
+      platform: "YesWeHack",
+      description: null,
+      currency: item?.business_unit?.currency || "USD",
+      minBounty: min ?? max,
+      maxBounty: max ?? min,
+      averageBounty: null,
+      reports: numberOrNull(item?.reports_count),
+      responseEfficiency: null,
+      launchedAt: null,
+      type,
+      tags: [item?.activity_area, item?.country].filter(Boolean),
+    });
+  }
+
+  return {
+    programs,
+    total: Number(payload?.pagination?.nb_results) || programs.length,
+    pages: Number(payload?.pagination?.nb_pages) || 1,
+  };
+}
+
+function normaliseBounty(value, fallbackSource = "hackerone") {
   if (!value || typeof value !== "object") return null;
   if (typeof value.name !== "string" || typeof value.handle !== "string") return null;
   const type = ["bounty", "vdp", "external"].includes(value.type) ? value.type : "bounty";
+  const source = VALID_SOURCES.has(value.source) ? value.source : fallbackSource;
   return {
-    id: typeof value.id === "string" ? value.id : bountyId(value.handle),
-    source: "hackerone",
+    id:
+      typeof value.id === "string"
+        ? value.id
+        : `${source}:${value.handle}`,
+    source,
     handle: value.handle,
     name: collapse(value.name),
-    url:
-      typeof value.url === "string"
-        ? value.url
-        : `https://hackerone.com/${encodeURIComponent(value.handle)}`,
-    platform: "HackerOne",
+    url: typeof value.url === "string" ? value.url : "",
+    platform:
+      typeof value.platform === "string" ? value.platform : SOURCE_LABELS[source],
     description: typeof value.description === "string" ? value.description : null,
     currency: typeof value.currency === "string" ? value.currency : null,
     minBounty: numberOrNull(value.minBounty),
@@ -259,24 +359,28 @@ function normaliseBounty(value) {
   };
 }
 
-export function emptyBountyCache() {
+export function emptyBountyCache(source = "hackerone") {
+  const safe = VALID_SOURCES.has(source) ? source : "hackerone";
   return {
     schemaVersion: 1,
-    source: "hackerone",
+    source: safe,
     fetchedAt: null,
     scanned: 0,
     programs: [],
   };
 }
 
-export function normaliseBountyCache(raw) {
+export function normaliseBountyCache(raw, fallbackSource = "hackerone") {
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.programs)) {
-    return emptyBountyCache();
+    return emptyBountyCache(fallbackSource);
   }
-  const programs = raw.programs.map(normaliseBounty).filter(Boolean);
+  const source = VALID_SOURCES.has(raw.source) ? raw.source : fallbackSource;
+  const programs = raw.programs
+    .map((item) => normaliseBounty(item, source))
+    .filter(Boolean);
   return {
     schemaVersion: 1,
-    source: "hackerone",
+    source,
     fetchedAt: typeof raw.fetchedAt === "string" ? raw.fetchedAt : null,
     scanned: Number.isFinite(raw.scanned) ? raw.scanned : programs.length,
     programs,

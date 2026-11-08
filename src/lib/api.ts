@@ -2,7 +2,7 @@ import type {
   Bootstrap,
   BountyCache,
   BountyFilters,
-  GitState,
+  BountySource,
   LegacyEngagement,
   RefreshProgress,
   SavedViews,
@@ -26,14 +26,14 @@ interface ShrikeBridge {
   openWorkspace(): Promise<Result<boolean>>;
   openExternal(url: string): Promise<Result<boolean>>;
 
-  listBounties(): Promise<Result<BountyCache>>;
-  refreshBounties(): Promise<Result<BountyCache>>;
+  listBounties(source: BountySource): Promise<Result<BountyCache>>;
+  refreshBounties(source: BountySource): Promise<Result<BountyCache>>;
   exportCsv(payload: {
+    source: BountySource;
     filters: BountyFilters;
     sort: SortKey;
   }): Promise<Result<{ filePath: string; count: number } | null>>;
 
-  setAutoPush(enabled: boolean): Promise<Result<{ settings: Settings; git: GitState }>>;
   setPrefs(
     prefs: Partial<Settings["prefs"]>,
   ): Promise<Result<{ settings: Settings }>>;
@@ -51,24 +51,14 @@ interface ShrikeBridge {
   }): Promise<Result<Shortlist>>;
   removeShortlist(id: string): Promise<Result<Shortlist>>;
 
-  pushNow(): Promise<Result<{ git: GitState }>>;
-  pullNow(): Promise<
-    Result<{ git: GitState; views: SavedViews; shortlist: Shortlist; legacy: LegacyEngagement[] }>
-  >;
-  setRemote(url: string): Promise<Result<{ git: GitState }>>;
-
   listLegacy(): Promise<Result<LegacyEngagement[]>>;
   archiveLegacy(id: string): Promise<Result<LegacyEngagement[]>>;
   deleteLegacy(id: string): Promise<Result<LegacyEngagement[]>>;
   archiveAllLegacy(): Promise<Result<LegacyEngagement[]>>;
   deleteAllLegacy(): Promise<Result<LegacyEngagement[]>>;
 
-  onSyncStatus(callback: (state: GitState) => void): () => void;
   onBountiesChanged(callback: (cache: BountyCache) => void): () => void;
   onBountyProgress(callback: (progress: RefreshProgress) => void): () => void;
-  onDataChanged(
-    callback: (payload: { views: SavedViews; shortlist: Shortlist }) => void,
-  ): () => void;
   onUpdateStatus(callback: (state: UpdateState) => void): () => void;
 }
 
@@ -83,12 +73,12 @@ export const api = {
   openWorkspace: () => unwrap(window.shrike.openWorkspace()),
   openExternal: (url: string) => unwrap(window.shrike.openExternal(url)),
 
-  listBounties: () => unwrap(window.shrike.listBounties()),
-  refreshBounties: () => unwrap(window.shrike.refreshBounties()),
-  exportCsv: (payload: { filters: BountyFilters; sort: SortKey }) =>
+  listBounties: (source: BountySource) => unwrap(window.shrike.listBounties(source)),
+  refreshBounties: (source: BountySource) =>
+    unwrap(window.shrike.refreshBounties(source)),
+  exportCsv: (payload: { source: BountySource; filters: BountyFilters; sort: SortKey }) =>
     unwrap(window.shrike.exportCsv(payload)),
 
-  setAutoPush: (enabled: boolean) => unwrap(window.shrike.setAutoPush(enabled)),
   setPrefs: (prefs: Partial<Settings["prefs"]>) => unwrap(window.shrike.setPrefs(prefs)),
 
   updateState: () => unwrap(window.shrike.updateState()),
@@ -101,24 +91,16 @@ export const api = {
     unwrap(window.shrike.setShortlist(payload)),
   removeShortlist: (id: string) => unwrap(window.shrike.removeShortlist(id)),
 
-  pushNow: () => unwrap(window.shrike.pushNow()),
-  pullNow: () => unwrap(window.shrike.pullNow()),
-  setRemote: (url: string) => unwrap(window.shrike.setRemote(url)),
-
   listLegacy: () => unwrap(window.shrike.listLegacy()),
   archiveLegacy: (id: string) => unwrap(window.shrike.archiveLegacy(id)),
   deleteLegacy: (id: string) => unwrap(window.shrike.deleteLegacy(id)),
   archiveAllLegacy: () => unwrap(window.shrike.archiveAllLegacy()),
   deleteAllLegacy: () => unwrap(window.shrike.deleteAllLegacy()),
 
-  onSyncStatus: (callback: (state: GitState) => void) =>
-    window.shrike.onSyncStatus(callback),
   onBountiesChanged: (callback: (cache: BountyCache) => void) =>
     window.shrike.onBountiesChanged(callback),
   onBountyProgress: (callback: (progress: RefreshProgress) => void) =>
     window.shrike.onBountyProgress(callback),
-  onDataChanged: (callback: (payload: { views: SavedViews; shortlist: Shortlist }) => void) =>
-    window.shrike.onDataChanged(callback),
   onUpdateStatus: (callback: (state: UpdateState) => void) =>
     window.shrike.onUpdateStatus(callback),
 };
